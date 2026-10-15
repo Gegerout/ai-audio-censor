@@ -1,4 +1,4 @@
-.PHONY: install lint fmt test check run db up down logs
+.PHONY: install lint fmt test check run db up down logs mlflow mlflow-logs
 
 # Зависимости строго по uv.lock и хуки pre-commit
 install:
@@ -41,3 +41,11 @@ down:
 # Логи приложения в реальном времени
 logs:
 	docker compose logs -f app
+
+# Поднять MLflow и его базу, остальные сервисы не нужны
+mlflow:
+	docker compose up -d --build --wait mlflow
+
+# Логи сервера экспериментов
+mlflow-logs:
+	docker compose logs -f mlflow

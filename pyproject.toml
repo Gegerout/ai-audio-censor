@@ -16,6 +16,10 @@ dev = [
     "pytest-cov>=7.1.0",
     "ruff>=0.16.8",
 ]
+tracking = [
+    "mlflow==3.17.1",
+    "psycopg2-binary==2.9.13",
+]
 web = [
     "asyncpg>=0.31.0",
     "fastapi>=0.141.1",
