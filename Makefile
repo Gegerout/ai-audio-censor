@@ -1,4 +1,4 @@
-.PHONY: install lint fmt test check run db up down logs mlflow mlflow-logs eda
+.PHONY: install lint fmt test check run db up down logs mlflow mlflow-logs eda train
 
 # Зависимости строго по uv.lock и хуки pre-commit
 install:
@@ -17,7 +17,7 @@ fmt:
 
 # Тесты с покрытием, при покрытии ниже 90 процентов команда падает
 test:
-	uv run pytest
+	uv run --locked --group ml pytest
 
 # Линтер и тесты вместе, перед push
 check: lint test
@@ -53,3 +53,7 @@ mlflow-logs:
 # Подготовить датасет и сохранить анализ в работающий MLflow
 eda:
 	uv run --locked --group ml python -m ml.eda
+
+# Обучить три модели и сравнить их на общей валидационной выборке
+train:
+	uv run --locked --group ml python -m ml.train

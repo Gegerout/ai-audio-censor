@@ -22,6 +22,7 @@ ml = [
     "mlflow==3.17.1",
     "pandas>=3.0.6",
     "python-dotenv>=1.2.3",
+    "scikit-learn==1.9.1",
 ]
 tracking = [
     "mlflow==3.17.1",
@@ -42,7 +43,7 @@ testpaths = ["tests"]
 pythonpath = ["."]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-addopts = "--cov=src --cov=ml.data --cov-report=term-missing"
+addopts = "--cov=src --cov=ml.data --cov=ml.model --cov=ml.evaluation --cov-report=term-missing"
 
 [tool.coverage.run]
 branch = true

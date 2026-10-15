@@ -34,6 +34,7 @@ ml = [
     { name = "mlflow" },
     { name = "pandas" },
     { name = "python-dotenv" },
+    { name = "scikit-learn" },
 ]
 tracking = [
     { name = "mlflow" },
@@ -64,6 +65,7 @@ ml = [
     { name = "mlflow", specifier = "==3.17.1" },
     { name = "pandas", specifier = ">=3.0.6" },
     { name = "python-dotenv", specifier = ">=1.2.3" },
+    { name = "scikit-learn", specifier = "==1.9.1" },
 ]
 tracking = [
     { name = "mlflow", specifier = "==3.17.1" },
