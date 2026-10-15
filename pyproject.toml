@@ -16,6 +16,13 @@ dev = [
     "pytest-cov>=7.1.0",
     "ruff>=0.16.8",
 ]
+ml = [
+    "httpx>=0.28.1",
+    "matplotlib>=3.11.2",
+    "mlflow==3.17.1",
+    "pandas>=3.0.6",
+    "python-dotenv>=1.2.3",
+]
 tracking = [
     "mlflow==3.17.1",
     "psycopg2-binary==2.9.13",
@@ -35,7 +42,7 @@ testpaths = ["tests"]
 pythonpath = ["."]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-addopts = "--cov=src --cov-report=term-missing"
+addopts = "--cov=src --cov=ml.data --cov-report=term-missing"
 
 [tool.coverage.run]
 branch = true

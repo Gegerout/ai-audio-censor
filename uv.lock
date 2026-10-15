@@ -28,6 +28,13 @@ dev = [
     { name = "pytest-cov" },
     { name = "ruff" },
 ]
+ml = [
+    { name = "httpx" },
+    { name = "matplotlib" },
+    { name = "mlflow" },
+    { name = "pandas" },
+    { name = "python-dotenv" },
+]
 tracking = [
     { name = "mlflow" },
     { name = "psycopg2-binary" },
@@ -50,6 +57,13 @@ dev = [
     { name = "pytest-asyncio", specifier = ">=1.4.0" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "ruff", specifier = ">=0.16.8" },
+]
+ml = [
+    { name = "httpx", specifier = ">=0.28.1" },
+    { name = "matplotlib", specifier = ">=3.11.2" },
+    { name = "mlflow", specifier = "==3.17.1" },
+    { name = "pandas", specifier = ">=3.0.6" },
+    { name = "python-dotenv", specifier = ">=1.2.3" },
 ]
 tracking = [
     { name = "mlflow", specifier = "==3.17.1" },

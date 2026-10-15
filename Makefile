@@ -1,4 +1,4 @@
-.PHONY: install lint fmt test check run db up down logs mlflow mlflow-logs
+.PHONY: install lint fmt test check run db up down logs mlflow mlflow-logs eda
 
 # Зависимости строго по uv.lock и хуки pre-commit
 install:
@@ -49,3 +49,7 @@ mlflow:
 # Логи сервера экспериментов
 mlflow-logs:
 	docker compose logs -f mlflow
+
+# Подготовить датасет и сохранить анализ в работающий MLflow
+eda:
+	uv run --locked --group ml python -m ml.eda
