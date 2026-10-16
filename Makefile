@@ -1,4 +1,4 @@
-.PHONY: install lint fmt test check run db up down logs
+.PHONY: install lint fmt test check run db up down logs mlflow mlflow-logs eda train register
 
 # Зависимости строго по uv.lock и хуки pre-commit
 install:
@@ -17,7 +17,7 @@ fmt:
 
 # Тесты с покрытием, при покрытии ниже 90 процентов команда падает
 test:
-	uv run pytest
+	uv run --locked --group ml pytest
 
 # Линтер и тесты вместе, перед push
 check: lint test
@@ -41,3 +41,23 @@ down:
 # Логи приложения в реальном времени
 logs:
 	docker compose logs -f app
+
+# Поднять MLflow и его базу, остальные сервисы не нужны
+mlflow:
+	docker compose up -d --build --wait mlflow
+
+# Логи сервера экспериментов
+mlflow-logs:
+	docker compose logs -f mlflow
+
+# Подготовить датасет и сохранить анализ в работающий MLflow
+eda:
+	uv run --locked --group ml python -m ml.eda
+
+# Обучить три модели и сравнить их на общей валидационной выборке
+train:
+	uv run --locked --group ml python -m ml.train
+
+# Зарегистрировать версии моделей и оценить выбранную модель на тестовой выборке
+register:
+	uv run --locked --group ml python -m ml.register

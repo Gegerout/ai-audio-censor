@@ -9,6 +9,58 @@ x-logging: &logging
     max-file: "3"
 
 services:
+  mlflow-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${MLFLOW_POSTGRES_USER:-mlflow}
+      POSTGRES_PASSWORD: ${MLFLOW_POSTGRES_PASSWORD:?задайте MLFLOW_POSTGRES_PASSWORD в .env}
+      POSTGRES_DB: ${MLFLOW_POSTGRES_DB:-mlflow}
+    volumes:
+      - mlflow-pgdata:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+    logging: *logging
+    restart: unless-stopped
+
+  mlflow:
+    build:
+      context: .
+      dockerfile: docker/mlflow/Dockerfile
+    environment:
+      # Драйвер читает логин и пароль отдельно, спецсимволы пароля не ломают URI
+      MLFLOW_BACKEND_STORE_URI: postgresql+psycopg2://mlflow-db:5432/${MLFLOW_POSTGRES_DB:-mlflow}
+      PGUSER: ${MLFLOW_POSTGRES_USER:-mlflow}
+      PGPASSWORD: ${MLFLOW_POSTGRES_PASSWORD:?задайте MLFLOW_POSTGRES_PASSWORD в .env}
+      MLFLOW_SERVER_ALLOWED_HOSTS: "localhost:*,127.0.0.1:*,mlflow:5000"
+    ports:
+      # Порт 5000 на macOS может занимать AirPlay
+      - "127.0.0.1:${MLFLOW_PORT:-5001}:5000"
+    volumes:
+      - mlflow-artifacts:/mlartifacts
+    depends_on:
+      mlflow-db:
+        condition: service_healthy
+    networks:
+      - backend
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2G
+    logging: *logging
+    restart: unless-stopped
+
   db:
     image: postgres:17-alpine
     environment:
@@ -44,18 +96,21 @@ services:
       # Внутри сети compose БД доступна по имени сервиса и стандартному порту
       POSTGRES_HOST: db
       POSTGRES_PORT: "5432"
+      MLFLOW_TRACKING_URI: http://mlflow:5000
     ports:
       - "8000:8000"
     depends_on:
       db:
+        condition: service_healthy
+      mlflow:
         condition: service_healthy
     networks:
       - backend
     deploy:
       resources:
         limits:
-          cpus: "0.5"
-          memory: 256M
+          cpus: "1.0"
+          memory: 1G
     logging: *logging
     restart: unless-stopped
 
@@ -64,3 +119,5 @@ networks:
 
 volumes:
   pgdata:
+  mlflow-pgdata:
+  mlflow-artifacts:
