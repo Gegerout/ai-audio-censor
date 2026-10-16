@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     # Сколько секунд ждать ответа каждой зависимости в /api/v1/health
     # Только больше нуля, иначе проверка упадёт по таймауту даже при живой БД
     health_timeout: float = Field(default=2.0, gt=0)
+    mlflow_tracking_uri: str = Field(default="http://localhost:5001", min_length=1)
+    mlflow_model_name: str = Field(default="toxic-spans-detector", min_length=1)
+    mlflow_model_alias: str = Field(default="champion", min_length=1)
 
 
 @lru_cache

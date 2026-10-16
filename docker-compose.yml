@@ -96,18 +96,21 @@ services:
       # Внутри сети compose БД доступна по имени сервиса и стандартному порту
       POSTGRES_HOST: db
       POSTGRES_PORT: "5432"
+      MLFLOW_TRACKING_URI: http://mlflow:5000
     ports:
       - "8000:8000"
     depends_on:
       db:
+        condition: service_healthy
+      mlflow:
         condition: service_healthy
     networks:
       - backend
     deploy:
       resources:
         limits:
-          cpus: "0.5"
-          memory: 256M
+          cpus: "1.0"
+          memory: 1G
     logging: *logging
     restart: unless-stopped
 

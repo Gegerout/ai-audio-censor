@@ -43,7 +43,11 @@ tracking = [
 web = [
     { name = "asyncpg" },
     { name = "fastapi" },
+    { name = "httpx" },
+    { name = "mlflow" },
+    { name = "pandas" },
     { name = "pydantic-settings" },
+    { name = "scikit-learn" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -74,7 +78,11 @@ tracking = [
 web = [
     { name = "asyncpg", specifier = ">=0.31.0" },
     { name = "fastapi", specifier = ">=0.141.1" },
+    { name = "httpx", specifier = ">=0.28.1" },
+    { name = "mlflow", specifier = "==3.17.1" },
+    { name = "pandas", specifier = ">=3.0.6" },
     { name = "pydantic-settings", specifier = ">=2.15.0" },
+    { name = "scikit-learn", specifier = "==1.9.1" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.53.0" },
 ]
 

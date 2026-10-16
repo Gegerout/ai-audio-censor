@@ -41,7 +41,7 @@ USER app
 EXPOSE 8000
 
 # В slim образе нет curl, поэтому проверка написана на стандартной библиотеке Python
-HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
+HEALTHCHECK --interval=10s --timeout=3s --start-period=60s --retries=3 \
     CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2)"]
 
 # В exec форме uvicorn становится первым процессом и сам получает SIGTERM от docker stop
