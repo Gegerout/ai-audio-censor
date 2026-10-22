@@ -1,5 +1,5 @@
-# Локальный стенд, приложение и Postgres в одной сети
-# Логин, пароль и имя базы берутся из .env, секретов в этом файле нет
+# Локальный стенд, приложение, воркер, RabbitMQ, MLflow и базы в одной сети
+# Логины, пароли и имена баз берутся из .env, секретов в этом файле нет
 
 x-logging: &logging
   # Ротация логов, иначе файл логов контейнера растёт без ограничений
@@ -9,6 +9,58 @@ x-logging: &logging
     max-file: "3"
 
 services:
+  mlflow-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${MLFLOW_POSTGRES_USER:-mlflow}
+      POSTGRES_PASSWORD: ${MLFLOW_POSTGRES_PASSWORD:?задайте MLFLOW_POSTGRES_PASSWORD в .env}
+      POSTGRES_DB: ${MLFLOW_POSTGRES_DB:-mlflow}
+    volumes:
+      - mlflow-pgdata:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+    logging: *logging
+    restart: unless-stopped
+
+  mlflow:
+    build:
+      context: .
+      dockerfile: docker/mlflow/Dockerfile
+    environment:
+      # Драйвер читает логин и пароль отдельно, спецсимволы пароля не ломают URI
+      MLFLOW_BACKEND_STORE_URI: postgresql+psycopg2://mlflow-db:5432/${MLFLOW_POSTGRES_DB:-mlflow}
+      PGUSER: ${MLFLOW_POSTGRES_USER:-mlflow}
+      PGPASSWORD: ${MLFLOW_POSTGRES_PASSWORD:?задайте MLFLOW_POSTGRES_PASSWORD в .env}
+      MLFLOW_SERVER_ALLOWED_HOSTS: "localhost:*,127.0.0.1:*,mlflow:5000"
+    ports:
+      # Порт 5000 на macOS может занимать AirPlay
+      - "127.0.0.1:${MLFLOW_PORT:-5001}:5000"
+    volumes:
+      - mlflow-artifacts:/mlartifacts
+    depends_on:
+      mlflow-db:
+        condition: service_healthy
+    networks:
+      - backend
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2G
+    logging: *logging
+    restart: unless-stopped
+
   db:
     image: postgres:17-alpine
     environment:
@@ -36,31 +88,153 @@ services:
     logging: *logging
     restart: unless-stopped
 
+  rabbitmq:
+    image: rabbitmq:4.4-management-alpine
+    # Данные брокера лежат в папке с именем узла, постоянное имя сохраняет их при пересоздании контейнера
+    hostname: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:?задайте RABBITMQ_USER в .env}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?задайте RABBITMQ_PASSWORD в .env}
+    ports:
+      # AMQP и Management UI только на localhost
+      - "127.0.0.1:${RABBITMQ_PORT:-5672}:5672"
+      - "127.0.0.1:${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+      - ./docker/rabbitmq/rabbitmq.conf:/etc/rabbitmq/conf.d/90-ai-audio-censor.conf:ro
+    networks:
+      - backend
+    healthcheck:
+      # Проверяет, что открыты все порты брокера, в том числе HTTP API для настройки лимита
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+    logging: *logging
+    restart: unless-stopped
+
+  rabbitmq-setup:
+    build: .
+    # Разовая задача, задаёт лимит очереди задач и объявляет очереди, затем завершается
+    # Отдельный профиль, потому что up с ожиданием считает ошибкой даже успешное завершение
+    # Её явно запускает make up и make rabbitmq после того, как брокер готов
+    profiles: ["setup"]
+    command: ["python", "-m", "src.broker_setup"]
+    env_file: .env
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_MANAGEMENT_PORT: "15672"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - backend
+    healthcheck:
+      disable: true
+    logging: *logging
+    restart: "no"
+
   app:
     build: .
     # Healthcheck приложения задан в Dockerfile и работает в любом окружении, не только в compose
     env_file: .env
     environment:
-      # Внутри сети compose БД доступна по имени сервиса и стандартному порту
+      # Внутри сети compose БД и брокер доступны по имени сервиса и стандартному порту
       POSTGRES_HOST: db
       POSTGRES_PORT: "5432"
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
     ports:
       - "8000:8000"
+    # Модель загружает воркер, приложению MLflow не нужен, а без брокера оно не стартует
     depends_on:
       db:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
     networks:
       - backend
     deploy:
       resources:
         limits:
+          cpus: "1.0"
+          memory: 1G
+    logging: *logging
+    restart: unless-stopped
+
+  worker:
+    build: .
+    # FastStream под uvicorn, тот же порт 8000 отдаёт /healthz для healthcheck из Dockerfile
+    command: ["uvicorn", "src.worker:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file: .env
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      # Пул и prefetch можно задать при запуске, make worker пересоздаёт воркеры с ними
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-}
+      WORKER_PREFETCH: ${WORKER_PREFETCH:-}
+    # Портов наружу нет, поэтому воркеров можно запускать несколько через scale
+    depends_on:
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    networks:
+      - backend
+    # Больше WORKER_GRACEFUL_TIMEOUT, иначе Docker убьёт воркер до завершения начатых задач
+    stop_grace_period: 40s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+    logging: *logging
+    restart: unless-stopped
+
+  source:
+    build: .
+    # Разовая пакетная отправка файла, её запускает make source
+    profiles: ["source"]
+    entrypoint: ["python", "-m", "src.source"]
+    env_file: .env
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+    volumes:
+      # Датасет скачивает make eda, источник только читает его
+      - ./data:/app/data:ro
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - backend
+    healthcheck:
+      disable: true
+    deploy:
+      resources:
+        limits:
           cpus: "0.5"
           memory: 256M
     logging: *logging
-    restart: unless-stopped
+    restart: "no"
 
 networks:
   backend:
 
 volumes:
   pgdata:
+  mlflow-pgdata:
+  mlflow-artifacts:
+  rabbitmq-data:

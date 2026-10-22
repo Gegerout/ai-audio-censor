@@ -1,7 +1,7 @@
 [project]
-name = "ai-equalizer"
+name = "ai-audio-censor"
 version = "0.1.0"
-description = "Приложение на FastAPI для настройки эквалайзера с помощью ИИ"
+description = "Система автоматического поиска и запикивания нецензурной лексики в аудио"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
@@ -15,11 +15,29 @@ dev = [
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
     "ruff>=0.16.8",
+    "testcontainers[postgres,rabbitmq]>=4.15.0",
+]
+ml = [
+    "httpx>=0.28.1",
+    "matplotlib>=3.11.2",
+    "mlflow==3.17.1",
+    "pandas>=3.0.6",
+    "python-dotenv>=1.2.3",
+    "scikit-learn==1.9.1",
+]
+tracking = [
+    "mlflow==3.17.1",
+    "psycopg2-binary==2.9.13",
 ]
 web = [
     "asyncpg>=0.31.0",
     "fastapi>=0.141.1",
+    "faststream[rabbit]>=0.7.7",
+    "httpx>=0.28.1",
+    "mlflow==3.17.1",
+    "pandas>=3.0.6",
     "pydantic-settings>=2.15.0",
+    "scikit-learn==1.9.1",
     "uvicorn[standard]>=0.53.0",
 ]
 
@@ -31,13 +49,15 @@ testpaths = ["tests"]
 pythonpath = ["."]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-addopts = "--cov=src --cov-report=term-missing"
+addopts = "--cov=src --cov=ml.data --cov=ml.model --cov=ml.evaluation --cov-report=term-missing"
 
 [tool.coverage.run]
 branch = true
 
 [tool.coverage.report]
 fail_under = 90
+# Точка входа консольной команды выполняется только при запуске процесса, а не в тестах
+exclude_also = ['if __name__ == "__main__":']
 
 [tool.ruff]
 target-version = "py311"

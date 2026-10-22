@@ -5,8 +5,8 @@ import pytest
 
 from src.config import Settings, get_settings
 from src.schemas import HealthStatus
-from src.services.health import build_report, check_postgres
-from tests.fakes import FakePool
+from src.services.health import build_report, check_postgres, check_rabbitmq
+from tests.fakes import FakeBroker, FakePool
 
 
 @pytest.fixture
@@ -56,14 +56,27 @@ async def test_check_postgres_times_out_when_postgres_hangs(settings) -> None:
 
 async def test_build_report_ok_when_all_components_ok(settings) -> None:
     """Общий статус ok, если здоровы все зависимости"""
-    report = await build_report(FakePool(), settings)
+    report = await build_report(FakePool(), FakeBroker(), settings)
 
     assert report.status is HealthStatus.OK
 
 
 async def test_build_report_fail_when_any_component_fails(settings) -> None:
     """Общий статус fail, если упала хотя бы одна зависимость"""
-    report = await build_report(FakePool(error=OSError()), settings)
+    report = await build_report(FakePool(error=OSError()), FakeBroker(), settings)
 
     assert report.status is HealthStatus.FAIL
     assert report.components["postgres"].status is HealthStatus.FAIL
+    assert report.components["rabbitmq"].status is HealthStatus.OK
+
+
+async def test_check_rabbitmq_reports_connection(settings) -> None:
+    """Брокер на связи даёт ok, без связи fail, общий статус тоже fail"""
+    alive = await check_rabbitmq(FakeBroker(alive=True), settings)
+    report = await build_report(FakePool(), FakeBroker(alive=False), settings)
+
+    assert alive.status is HealthStatus.OK
+    assert alive.latency_ms >= 0
+    assert report.status is HealthStatus.FAIL
+    assert report.components["rabbitmq"].status is HealthStatus.FAIL
+    assert report.components["rabbitmq"].error == "ConnectionError"
