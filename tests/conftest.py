@@ -18,7 +18,11 @@ os.environ["RABBITMQ_USER"] = "test"
 os.environ["RABBITMQ_PASSWORD"] = "test"
 os.environ["TASKS_QUEUE_LIMIT"] = "100"
 
+import asyncio
+
+import aio_pika
 import asyncpg
+import httpx
 import pandas as pd
 import pytest
 from asgi_lifespan import LifespanManager
@@ -28,6 +32,7 @@ from testcontainers.community.postgres import PostgresContainer
 from testcontainers.community.rabbitmq import RabbitMqContainer
 
 from src.app import app
+from src.broker import DEAD_LETTER_QUEUE, QUEUE_POLICY_NAME, TASKS_QUEUE, apply_queue_policy
 from src.schemas import ModelInfo
 from src.services.inference import InferenceService
 from src.storage import ensure_schema
@@ -53,6 +58,46 @@ def rabbitmq_settings() -> Iterator[dict]:
             "rabbitmq_port": int(container.get_exposed_port(5672)),
             "rabbitmq_management_port": int(container.get_exposed_port(15672)),
         }
+
+
+@pytest.fixture
+async def rabbit_connection(settings) -> AsyncIterator[aio_pika.abc.AbstractConnection]:
+    """Соединение с брокером из контейнера для проверки очереди и тестовых потребителей
+
+    Адрес берётся из фикстуры settings того модуля, где идёт тест
+    """
+    connection = await aio_pika.connect(
+        host=settings.rabbitmq_host,
+        port=settings.rabbitmq_port,
+        login=settings.rabbitmq_user,
+        password=settings.rabbitmq_password.get_secret_value(),
+    )
+    yield connection
+    await connection.close()
+
+
+@pytest.fixture
+async def limited_tasks_queue(settings, rabbit_connection) -> AsyncIterator[None]:
+    """Очередь задач с лимитом из settings теста, после теста политика и очереди удаляются"""
+    channel = await rabbit_connection.channel()
+    for name in (TASKS_QUEUE.name, DEAD_LETTER_QUEUE.name):
+        await channel.queue_delete(name)
+    base = f"http://{settings.rabbitmq_host}:{settings.rabbitmq_management_port}"
+    auth = (settings.rabbitmq_user, settings.rabbitmq_password.get_secret_value())
+    async with httpx.AsyncClient(timeout=5) as client:
+        # Management API поднимается позже AMQP, поэтому первые попытки могут не пройти
+        for _ in range(60):
+            try:
+                await apply_queue_policy(settings, client)
+                break
+            except httpx.HTTPError:
+                await asyncio.sleep(0.5)
+        else:
+            pytest.fail("Management API не ответил")
+        yield
+        await client.delete(f"{base}/api/policies/%2F/{QUEUE_POLICY_NAME}", auth=auth)
+    for name in (TASKS_QUEUE.name, DEAD_LETTER_QUEUE.name):
+        await channel.queue_delete(name)
 
 
 @pytest.fixture
