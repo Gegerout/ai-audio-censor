@@ -12,6 +12,15 @@ class HealthStatus(StrEnum):
     FAIL = "fail"
 
 
+class TaskStatus(StrEnum):
+    """Состояние задачи в хранилище"""
+
+    PENDING = "pending"
+    PROCESSING = "processing"
+    DONE = "done"
+    FAILED = "failed"
+
+
 class LivenessResponse(BaseModel):
     """Ответ /healthz"""
 
