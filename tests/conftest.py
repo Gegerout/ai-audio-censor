@@ -13,6 +13,10 @@ os.environ["POSTGRES_USER"] = "test"
 os.environ["POSTGRES_PASSWORD"] = "test"
 os.environ["POSTGRES_DB"] = "test"
 os.environ["HEALTH_TIMEOUT"] = "1"
+os.environ["RABBITMQ_HOST"] = "127.0.0.1"
+os.environ["RABBITMQ_USER"] = "test"
+os.environ["RABBITMQ_PASSWORD"] = "test"
+os.environ["TASKS_QUEUE_LIMIT"] = "100"
 
 import pandas as pd
 import pytest

@@ -27,6 +27,13 @@ class Settings(BaseSettings):
     mlflow_tracking_uri: str = Field(default="http://localhost:5001", min_length=1)
     mlflow_model_name: str = Field(default="toxic-spans-detector", min_length=1)
     mlflow_model_alias: str = Field(default="champion", min_length=1)
+    rabbitmq_host: str = "localhost"
+    rabbitmq_port: int = 5672
+    rabbitmq_management_port: int = 15672
+    rabbitmq_user: str
+    rabbitmq_password: SecretStr
+    # Сколько задач может ждать в очереди, при заполнении брокер отказывает в публикации
+    tasks_queue_limit: int = Field(default=100, gt=0)
 
 
 @lru_cache
