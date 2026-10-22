@@ -1,8 +1,8 @@
-# AI Equalizer
+# AI Audio Censor
 
-[![CI/CD](https://github.com/Gegerout/ai-equalizer/actions/workflows/cd.yml/badge.svg)](https://github.com/Gegerout/ai-equalizer/actions/workflows/cd.yml)
+[![CI/CD](https://github.com/Gegerout/ai-audio-censor/actions/workflows/cd.yml/badge.svg)](https://github.com/Gegerout/ai-audio-censor/actions/workflows/cd.yml)
 
-Асинхронный сервис на FastAPI и Postgres для настройки эквалайзера с помощью ИИ. Реализованы проверки живости и зависимостей, версия приложения, структурированные логи, эксперименты и реестр моделей в MLflow, inference через HTTP, тесты, Docker и CI/CD с публикацией образа в GitHub Container Registry.
+Система автоматического поиска и запикивания нецензурной лексики в аудио. Сейчас в ней есть асинхронный сервис на FastAPI и Postgres с проверками живости и зависимостей, версией приложения и структурированными логами, эксперименты и реестр моделей в MLflow, inference через HTTP, тесты, Docker и CI/CD с публикацией образа в GitHub Container Registry.
 
 **Стек.** Python 3.11, FastAPI, uvicorn, asyncpg, pydantic-settings. Окружение и зависимости через uv, линтер и форматтер ruff, тесты pytest с coverage, pre-commit, Docker и docker compose, GitHub Actions, образы в GHCR.
 
@@ -52,7 +52,7 @@ curl localhost:8000/api/v1/health
 Готовый образ можно скачать из реестра без сборки.
 
 ```bash
-docker pull ghcr.io/gegerout/ai-equalizer:latest
+docker pull ghcr.io/gegerout/ai-audio-censor:latest
 ```
 
 ## MLflow
@@ -488,7 +488,7 @@ docker-compose.yml      # приложение, MLflow и две базы, се�
 
 **CI** в `ci.yml` проверяет линтер, формат, остальные хуки pre-commit и тесты с порогом покрытия 90 процентов. Ошибки ruff появляются аннотациями на строках кода, таблица покрытия выводится в сводке запуска. CI запускается на pull request и на push в любые ветки, кроме `main`.
 
-**CD** в `cd.yml` запускается на push в `main` и на теги релиза. Сначала он прогоняет тот же CI, и только если всё зелёное, собирает образ и публикует его в `ghcr.io/gegerout/ai-equalizer`.
+**CD** в `cd.yml` запускается на push в `main` и на теги релиза. Сначала он прогоняет тот же CI, и только если всё зелёное, собирает образ и публикует его в `ghcr.io/gegerout/ai-audio-censor`.
 
 | Событие | Теги образа |
 |---|---|

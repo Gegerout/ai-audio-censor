@@ -94,7 +94,7 @@ async def log_requests(
 def create_app() -> FastAPI:
     """Собрать приложение, подключить логи, роуты и middleware"""
     setup_logging(get_settings().log_level)
-    app = FastAPI(title="ai-equalizer", version=get_app_version(), lifespan=lifespan)
+    app = FastAPI(title="AI Audio Censor", version=get_app_version(), lifespan=lifespan)
     app.middleware("http")(log_requests)
     app.include_router(healthz.router)
     app.include_router(v1.router)

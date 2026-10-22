@@ -14,7 +14,7 @@ resolution-markers = [
 ]
 
 [[package]]
-name = "ai-equalizer"
+name = "ai-audio-censor"
 version = "0.1.0"
 source = { virtual = "." }
 
