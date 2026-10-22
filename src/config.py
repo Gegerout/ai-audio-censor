@@ -47,6 +47,12 @@ class Settings(BaseSettings):
     task_retry_delay_seconds: float = Field(default=1.0, ge=0)
     # Сколько воркер ждёт завершения уже принятых задач при остановке
     worker_graceful_timeout: float = Field(default=30.0, gt=0)
+    # Первая пауза источника после отказа брокера, за это время воркер освобождает одно место
+    source_initial_delay_seconds: float = Field(default=0.05, gt=0)
+    # Предельная пауза источника, за это время воркер разбирает полную очередь
+    source_max_delay_seconds: float = Field(default=5.0, gt=0)
+    # Как часто источник пишет в лог скорость публикации
+    source_report_seconds: float = Field(default=1.0, gt=0)
 
     @property
     def worker_prefetch_count(self) -> int:

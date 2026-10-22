@@ -1,4 +1,4 @@
-.PHONY: install lint fmt test check run db up down logs mlflow mlflow-logs eda train register rabbitmq queue-limit worker worker-logs
+.PHONY: install lint fmt test check run db up down logs mlflow mlflow-logs eda train register rabbitmq queue-limit worker worker-logs source
 
 # Зависимости строго по uv.lock и хуки pre-commit
 install:
@@ -70,6 +70,14 @@ worker:
 # Логи всех воркеров в реальном времени
 worker-logs:
 	docker compose logs -f worker
+
+# Пакетная отправка строк файла в очередь задач, файл появляется после make eda
+# RUN задаёт имя запуска и id задач, START и COUNT задают диапазон строк
+SOURCE_FILE ?= $(firstword $(wildcard data/raw/*/train.csv))
+RUN ?= default
+source:
+	docker compose run --rm --build source --file $(SOURCE_FILE) --run $(RUN) \
+		$(if $(START),--start $(START)) $(if $(COUNT),--count $(COUNT))
 
 # Подготовить датасет и сохранить анализ в работающий MLflow
 eda:

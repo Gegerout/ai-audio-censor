@@ -201,6 +201,33 @@ services:
     logging: *logging
     restart: unless-stopped
 
+  source:
+    build: .
+    # Разовая пакетная отправка файла, её запускает make source
+    profiles: ["source"]
+    entrypoint: ["python", "-m", "src.source"]
+    env_file: .env
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+    volumes:
+      # Датасет скачивает make eda, источник только читает его
+      - ./data:/app/data:ro
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - backend
+    healthcheck:
+      disable: true
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+    logging: *logging
+    restart: "no"
+
 networks:
   backend:
 

@@ -8,6 +8,7 @@ import re
 
 import httpx
 from faststream.rabbit import (
+    Channel,
     ExchangeType,
     QueueType,
     RabbitBroker,
@@ -47,6 +48,9 @@ def make_broker(settings: Settings, graceful_timeout: float | None = None) -> Ra
             password=settings.rabbitmq_password.get_secret_value(),
         ),
         graceful_timeout=graceful_timeout,
+        # Публикация ждёт подтверждения брокера, а сообщение, которое не попало ни в одну очередь,
+        # вызывает ошибку, а не теряется молча
+        default_channel=Channel(publisher_confirms=True, on_return_raises=True),
         # Логи FastStream идут в общий JSON формат, а не в его собственный цветной вывод
         logger=logging.getLogger(__name__),
         # Запись о каждом сообщении видна только на уровне DEBUG, итог задачи пишет сам компонент

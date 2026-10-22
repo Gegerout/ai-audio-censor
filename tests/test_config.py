@@ -53,6 +53,9 @@ def test_prefetch_defaults_to_pool_size(monkeypatch, prefetch, expected) -> None
         ("TASK_MAX_DELIVERIES", "0"),
         ("TASK_RETRY_DELAY_SECONDS", "-1"),
         ("WORKER_GRACEFUL_TIMEOUT", "0"),
+        ("SOURCE_INITIAL_DELAY_SECONDS", "0"),
+        ("SOURCE_MAX_DELAY_SECONDS", "0"),
+        ("SOURCE_REPORT_SECONDS", "0"),
     ],
 )
 def test_settings_reject_invalid_worker_values(monkeypatch, name, value) -> None:
