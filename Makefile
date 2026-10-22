@@ -1,4 +1,4 @@
-.PHONY: install lint fmt test check run db up down logs mlflow mlflow-logs eda train register rabbitmq queue-limit worker worker-logs source
+.PHONY: install lint fmt test check run db up down logs mlflow mlflow-logs eda train register rabbitmq queue-limit worker worker-logs source experiment
 
 # Зависимости строго по uv.lock и хуки pre-commit
 install:
@@ -78,6 +78,12 @@ RUN ?= default
 source:
 	docker compose run --rm --build source --file $(SOURCE_FILE) --run $(RUN) \
 		$(if $(START),--start $(START)) $(if $(COUNT),--count $(COUNT))
+
+# Эксперимент с лимитом очереди и без него, около пяти минут, данные и графики в docs/experiment
+experiment:
+	docker compose build source worker
+	uv run --locked --group ml python -m experiments.backpressure
+	uv run --locked --group ml python -m experiments.plot
 
 # Подготовить датасет и сохранить анализ в работающий MLflow
 eda:
