@@ -65,9 +65,9 @@ def test_unready_model_is_not_loaded(monkeypatch):
         load_inference(get_settings())
 
 
-def test_inference_rejects_wrong_number_of_predictions(model_loader):
+def test_inference_rejects_wrong_number_of_predictions(fake_inference):
     """Лишние строки модели не игнорируются при выдаче ответа"""
-    service = model_loader.return_value
+    service = fake_inference
     service.model.predict.side_effect = None
     service.model.predict.return_value = pd.DataFrame({"positions": [[], []]})
     with pytest.raises(ValueError, match="один результат"):

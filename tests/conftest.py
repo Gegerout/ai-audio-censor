@@ -22,6 +22,7 @@ import asyncpg
 import pandas as pd
 import pytest
 from asgi_lifespan import LifespanManager
+from faststream.rabbit import TestRabbitBroker
 from httpx import ASGITransport, AsyncClient
 from testcontainers.community.postgres import PostgresContainer
 from testcontainers.community.rabbitmq import RabbitMqContainer
@@ -94,17 +95,9 @@ def fake_inference() -> InferenceService:
 
 
 @pytest.fixture
-def model_loader(monkeypatch, fake_inference):
-    """Подменить только загрузку модели, сохранив настоящий путь обработки запроса"""
-    loader = Mock(return_value=fake_inference)
-    monkeypatch.setattr("src.app.load_inference", loader)
-    return loader
-
-
-@pytest.fixture
-async def client(model_loader) -> AsyncIterator[AsyncClient]:
-    """HTTP клиент приложения, который запускает lifespan с пулом БД"""
-    async with LifespanManager(app):
+async def client() -> AsyncIterator[AsyncClient]:
+    """HTTP клиент приложения, lifespan создаёт пул БД, а брокер работает в памяти"""
+    async with TestRabbitBroker(app.state.broker, connect_only=True), LifespanManager(app):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as http:
             yield http

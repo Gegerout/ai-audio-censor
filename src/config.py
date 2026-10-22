@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     rabbitmq_password: SecretStr
     # Сколько задач может ждать в очереди, при заполнении брокер отказывает в публикации
     tasks_queue_limit: int = Field(default=100, gt=0)
+    # Сколько API ждёт базу и брокер при приёме задачи, дольше запрос не висит
+    tasks_timeout_seconds: float = Field(default=2.0, gt=0)
+    # Retry-After, когда время разбора очереди оценить нельзя, примерно столько стартует воркер
+    tasks_retry_after_max_seconds: int = Field(default=30, gt=0)
     # Размер пула потоков воркера, столько задач он выполняет одновременно
     worker_concurrency: int = Field(default=4, gt=0)
     # Сколько неподтверждённых сообщений брокер отдаёт воркеру, по умолчанию равно размеру пула

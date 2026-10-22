@@ -146,16 +146,18 @@ services:
     # Healthcheck приложения задан в Dockerfile и работает в любом окружении, не только в compose
     env_file: .env
     environment:
-      # Внутри сети compose БД доступна по имени сервиса и стандартному порту
+      # Внутри сети compose БД и брокер доступны по имени сервиса и стандартному порту
       POSTGRES_HOST: db
       POSTGRES_PORT: "5432"
-      MLFLOW_TRACKING_URI: http://mlflow:5000
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
     ports:
       - "8000:8000"
+    # Модель загружает воркер, приложению MLflow не нужен, а без брокера оно не стартует
     depends_on:
       db:
         condition: service_healthy
-      mlflow:
+      rabbitmq:
         condition: service_healthy
     networks:
       - backend

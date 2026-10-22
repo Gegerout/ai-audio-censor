@@ -8,31 +8,21 @@ from contextlib import asynccontextmanager
 
 import asyncpg
 from fastapi import FastAPI, Request, Response
-from starlette.concurrency import run_in_threadpool
 
-from src.api import healthz, process, v1
-from src.config import get_app_version, get_settings
+from src.api import healthz, tasks, v1
+from src.broker import declare_topology, make_broker
+from src.config import Settings, get_app_version, get_settings
 from src.logging_config import request_id_var, setup_logging
-from src.services.inference import load_inference
+from src.services.tasks import STORAGE_ERRORS
+from src.storage import ensure_schema
 
 log = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Загрузить модель и создать пул БД до начала обработки запросов"""
-    settings = get_settings()
-    app.state.inference = await run_in_threadpool(load_inference, settings)
-    info = app.state.inference.info
-    log.info(
-        "model loaded",
-        extra={
-            "model_name": info.name,
-            "model_version": info.version,
-            "model_alias": info.alias,
-            "training_run_id": info.run_id,
-        },
-    )
+    """Создать пул БД и подключиться к брокеру до начала обработки запросов"""
+    settings: Settings = app.state.settings
     # Пул с min_size 0 не подключается при старте, поэтому приложение поднимется и без БД,
     # а /api/v1/health покажет, что она недоступна
     pool = await asyncpg.create_pool(
@@ -44,12 +34,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         min_size=0,
     )
     app.state.db_pool = pool
-    log.info("application started", extra={"version": app.version})
+    broker = app.state.broker
     try:
+        # Без брокера задачи принимать некуда, поэтому приложение не стартует
+        await broker.connect()
+        await declare_topology(broker)
+        try:
+            await ensure_schema(pool)
+        except STORAGE_ERRORS as exc:
+            # Таблицу создаст воркер или следующий старт, пока база недоступна, API отвечает 503
+            log.warning("task table not ensured", extra={"error": repr(exc)})
+        log.info("application started", extra={"version": app.version})
         yield
     finally:
+        await broker.stop()
         await pool.close()
-        app.state.inference = None
         log.info("application stopped")
 
 
@@ -91,14 +90,17 @@ async def log_requests(
     return response
 
 
-def create_app() -> FastAPI:
+def create_app(settings: Settings | None = None) -> FastAPI:
     """Собрать приложение, подключить логи, роуты и middleware"""
-    setup_logging(get_settings().log_level)
+    settings = settings or get_settings()
+    setup_logging(settings.log_level)
     app = FastAPI(title="AI Audio Censor", version=get_app_version(), lifespan=lifespan)
+    app.state.settings = settings
+    app.state.broker = make_broker(settings)
     app.middleware("http")(log_requests)
     app.include_router(healthz.router)
     app.include_router(v1.router)
-    app.include_router(process.router)
+    app.include_router(tasks.router)
     return app
 
 

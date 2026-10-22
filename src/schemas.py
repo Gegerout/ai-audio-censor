@@ -1,5 +1,6 @@
 """Контракты API и сообщений очереди на Pydantic"""
 
+from datetime import datetime
 from enum import StrEnum
 from typing import Annotated
 from uuid import UUID
@@ -62,8 +63,8 @@ class HealthResponse(BaseModel):
     components: dict[str, ComponentHealth]
 
 
-class ProcessRequest(BaseModel):
-    """Текст для поиска токсичных фрагментов"""
+class TaskRequest(BaseModel):
+    """Текст, в котором нужно найти токсичные фрагменты"""
 
     text: TaskText
 
@@ -99,3 +100,31 @@ class ProcessResponse(BaseModel):
 
     model: ModelInfo
     spans: list[TextSpan]
+
+
+class TaskAccepted(BaseModel):
+    """Задача принята в очередь, результат отдаёт GET /api/v1/tasks/{task_id}"""
+
+    task_id: UUID
+    status: TaskStatus
+
+
+class TaskResponse(BaseModel):
+    """Состояние задачи, найденные фрагменты и модель, которая их нашла"""
+
+    task_id: UUID
+    status: TaskStatus
+    attempts: int
+    spans: list[TextSpan] | None
+    model_name: str | None
+    model_version: str | None
+    error: str | None
+    enqueued_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+
+
+class ErrorResponse(BaseModel):
+    """Причина отказа"""
+
+    detail: str
