@@ -1,4 +1,4 @@
-.PHONY: install lint fmt test check run db up down logs mlflow mlflow-logs eda train register rabbitmq queue-limit
+.PHONY: install lint fmt test check run db up down logs mlflow mlflow-logs eda train register rabbitmq queue-limit worker worker-logs
 
 # Зависимости строго по uv.lock и хуки pre-commit
 install:
@@ -59,6 +59,17 @@ rabbitmq:
 # Сменить лимит очереди на лету без потери сообщений, новое значение передаётся в LIMIT
 queue-limit:
 	docker compose run --rm -e TASKS_QUEUE_LIMIT=$(LIMIT) rabbitmq-setup
+
+# Пересоздать воркеры, число задаёт WORKERS, prefetch и размер пула PREFETCH и CONCURRENCY
+# Пустые значения не передаются, тогда берутся настройки из .env
+WORKERS ?= 1
+worker:
+	$(if $(PREFETCH),WORKER_PREFETCH=$(PREFETCH)) $(if $(CONCURRENCY),WORKER_CONCURRENCY=$(CONCURRENCY)) \
+		docker compose up -d --build --wait --no-deps --scale worker=$(WORKERS) worker
+
+# Логи всех воркеров в реальном времени
+worker-logs:
+	docker compose logs -f worker
 
 # Подготовить датасет и сохранить анализ в работающий MLflow
 eda:

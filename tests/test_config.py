@@ -32,3 +32,32 @@ def test_settings_hide_password(monkeypatch) -> None:
 
     assert "s3cret" not in repr(settings)
     assert settings.postgres_password.get_secret_value() == "s3cret"
+
+
+@pytest.mark.parametrize(("prefetch", "expected"), [(None, 4), ("", 4), ("10", 10)])
+def test_prefetch_defaults_to_pool_size(monkeypatch, prefetch, expected) -> None:
+    """Без явного prefetch он равен размеру пула, пустое значение считается незаданным"""
+    monkeypatch.setenv("WORKER_CONCURRENCY", "4")
+    if prefetch is not None:
+        monkeypatch.setenv("WORKER_PREFETCH", prefetch)
+
+    assert Settings(_env_file=None).worker_prefetch_count == expected
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("WORKER_CONCURRENCY", "0"),
+        ("WORKER_PREFETCH", "0"),
+        ("INFERENCE_SECONDS", "-1"),
+        ("TASK_MAX_DELIVERIES", "0"),
+        ("TASK_RETRY_DELAY_SECONDS", "-1"),
+        ("WORKER_GRACEFUL_TIMEOUT", "0"),
+    ],
+)
+def test_settings_reject_invalid_worker_values(monkeypatch, name, value) -> None:
+    """Недопустимые настройки воркера отклоняются при старте, а не ломают обработку"""
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ValidationError, match=name.lower()):
+        Settings(_env_file=None)

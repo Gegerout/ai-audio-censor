@@ -1,4 +1,4 @@
-# Локальный стенд, приложение, RabbitMQ, MLflow и базы в одной сети
+# Локальный стенд, приложение, воркер, RabbitMQ, MLflow и базы в одной сети
 # Логины, пароли и имена баз берутся из .env, секретов в этом файле нет
 
 x-logging: &logging
@@ -159,6 +159,40 @@ services:
         condition: service_healthy
     networks:
       - backend
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+    logging: *logging
+    restart: unless-stopped
+
+  worker:
+    build: .
+    # FastStream под uvicorn, тот же порт 8000 отдаёт /healthz для healthcheck из Dockerfile
+    command: ["uvicorn", "src.worker:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file: .env
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      # Пул и prefetch можно задать при запуске, make worker пересоздаёт воркеры с ними
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-}
+      WORKER_PREFETCH: ${WORKER_PREFETCH:-}
+    # Портов наружу нет, поэтому воркеров можно запускать несколько через scale
+    depends_on:
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    networks:
+      - backend
+    # Больше WORKER_GRACEFUL_TIMEOUT, иначе Docker убьёт воркер до завершения начатых задач
+    stop_grace_period: 40s
     deploy:
       resources:
         limits:

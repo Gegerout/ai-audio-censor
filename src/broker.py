@@ -3,6 +3,7 @@
 Все компоненты берут обменники и очереди отсюда, поэтому объявляют их с одинаковыми параметрами
 """
 
+import logging
 import re
 
 import httpx
@@ -33,8 +34,11 @@ DEAD_LETTER_QUEUE = RabbitQueue("tasks.dlq", queue_type=QueueType.CLASSIC, durab
 QUEUE_POLICY_NAME = "tasks-limit"
 
 
-def make_broker(settings: Settings) -> RabbitBroker:
-    """Создать брокер, логин и пароль передаются отдельно, поэтому спецсимволы не ломают адрес"""
+def make_broker(settings: Settings, graceful_timeout: float | None = None) -> RabbitBroker:
+    """Создать брокер, логин и пароль передаются отдельно, поэтому спецсимволы не ломают адрес
+
+    graceful_timeout задаёт, сколько при остановке ждать обработчики, которые уже работают
+    """
     return RabbitBroker(
         host=settings.rabbitmq_host,
         port=settings.rabbitmq_port,
@@ -42,6 +46,11 @@ def make_broker(settings: Settings) -> RabbitBroker:
             username=settings.rabbitmq_user,
             password=settings.rabbitmq_password.get_secret_value(),
         ),
+        graceful_timeout=graceful_timeout,
+        # Логи FastStream идут в общий JSON формат, а не в его собственный цветной вывод
+        logger=logging.getLogger(__name__),
+        # Запись о каждом сообщении видна только на уровне DEBUG, итог задачи пишет сам компонент
+        log_level=logging.DEBUG,
     )
 
 
@@ -68,11 +77,16 @@ async def apply_queue_policy(settings: Settings, client: httpx.AsyncClient) -> N
     response.raise_for_status()
 
 
-async def declare_topology(broker: RabbitBroker) -> None:
-    """Объявить обменники и очереди задач и недоставленных сообщений, повтор безопасен"""
-    tasks_exchange = await broker.declare_exchange(TASKS_EXCHANGE)
+async def declare_dead_letters(broker: RabbitBroker) -> None:
+    """Объявить обменник и очередь недоставленных сообщений, повтор безопасен"""
     dead_letter_exchange = await broker.declare_exchange(DEAD_LETTER_EXCHANGE)
-    tasks = await broker.declare_queue(TASKS_QUEUE)
-    await tasks.bind(tasks_exchange, routing_key=TASKS_ROUTING_KEY)
     dead_letters = await broker.declare_queue(DEAD_LETTER_QUEUE)
     await dead_letters.bind(dead_letter_exchange)
+
+
+async def declare_topology(broker: RabbitBroker) -> None:
+    """Объявить обменники и очереди задач и недоставленных сообщений, повтор безопасен"""
+    await declare_dead_letters(broker)
+    tasks_exchange = await broker.declare_exchange(TASKS_EXCHANGE)
+    tasks = await broker.declare_queue(TASKS_QUEUE)
+    await tasks.bind(tasks_exchange, routing_key=TASKS_ROUTING_KEY)

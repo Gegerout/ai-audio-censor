@@ -1,8 +1,21 @@
-"""Контракты ответов API на Pydantic"""
+"""Контракты API и сообщений очереди на Pydantic"""
 
 from enum import StrEnum
+from typing import Annotated
+from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AfterValidator, AwareDatetime, BaseModel, Field
+
+
+def reject_blank(value: str) -> str:
+    """Отклонить пустое содержимое, сохранив исходные пробелы и позиции"""
+    if not value.strip():
+        raise ValueError("Текст не должен состоять только из пробелов")
+    return value
+
+
+# Один тип текста для API и очереди, поэтому проверки входа везде одинаковые
+TaskText = Annotated[str, Field(min_length=1, max_length=10000), AfterValidator(reject_blank)]
 
 
 class HealthStatus(StrEnum):
@@ -52,15 +65,16 @@ class HealthResponse(BaseModel):
 class ProcessRequest(BaseModel):
     """Текст для поиска токсичных фрагментов"""
 
-    text: str = Field(min_length=1, max_length=10000)
+    text: TaskText
 
-    @field_validator("text")
-    @classmethod
-    def reject_blank_text(cls, value: str) -> str:
-        """Отклонить пустое содержимое, сохранив исходные пробелы и позиции"""
-        if not value.strip():
-            raise ValueError("Текст не должен состоять только из пробелов")
-        return value
+
+class TaskMessage(BaseModel):
+    """Задача в очереди RabbitMQ, её публикуют источник и API, а выполняет воркер"""
+
+    task_id: UUID
+    text: TaskText
+    # Время приёма задачи, от него считается полное время выполнения вместе с ожиданием
+    enqueued_at: AwareDatetime
 
 
 class ModelInfo(BaseModel):

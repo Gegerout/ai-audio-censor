@@ -2,7 +2,7 @@
 
 import os
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from unittest.mock import Mock
 
 # Окружение задаётся до импорта src.app, потому что приложение собирается при импорте
@@ -24,6 +24,7 @@ import pytest
 from asgi_lifespan import LifespanManager
 from httpx import ASGITransport, AsyncClient
 from testcontainers.community.postgres import PostgresContainer
+from testcontainers.community.rabbitmq import RabbitMqContainer
 
 from src.app import app
 from src.schemas import ModelInfo
@@ -38,6 +39,21 @@ def postgres_url():
         yield container.get_connection_url()
 
 
+@pytest.fixture(scope="session")
+def rabbitmq_settings() -> Iterator[dict]:
+    """Настоящий RabbitMQ в контейнере, та же версия, что в compose, один на весь прогон"""
+    # Логин и пароль совпадают с окружением выше, guest RabbitMQ пускает только с localhost
+    container = RabbitMqContainer(
+        "rabbitmq:4.4-management-alpine", username="test", password="test"
+    ).with_exposed_ports(15672)
+    with container:
+        yield {
+            "rabbitmq_host": container.get_container_host_ip(),
+            "rabbitmq_port": int(container.get_exposed_port(5672)),
+            "rabbitmq_management_port": int(container.get_exposed_port(15672)),
+        }
+
+
 @pytest.fixture
 async def task_pool(postgres_url) -> AsyncIterator[asyncpg.Pool]:
     """Пул к Postgres с пустой таблицей задач перед каждым тестом"""
@@ -49,8 +65,8 @@ async def task_pool(postgres_url) -> AsyncIterator[asyncpg.Pool]:
 
 
 @pytest.fixture
-def model_loader(monkeypatch):
-    """Подменить только загрузку модели, сохранив настоящий путь обработки запроса"""
+def fake_inference() -> InferenceService:
+    """Сервис inference с моделью, которая находит слово idiot без обращения к MLflow"""
     model = Mock()
 
     def predict(frame):
@@ -69,14 +85,18 @@ def model_loader(monkeypatch):
         )
 
     model.predict.side_effect = predict
-    loader = Mock(
-        return_value=InferenceService(
-            model=model,
-            info=ModelInfo(
-                name="toxic-spans-detector", version="1", alias="champion", run_id="run-one"
-            ),
-        )
+    return InferenceService(
+        model=model,
+        info=ModelInfo(
+            name="toxic-spans-detector", version="1", alias="champion", run_id="run-one"
+        ),
     )
+
+
+@pytest.fixture
+def model_loader(monkeypatch, fake_inference):
+    """Подменить только загрузку модели, сохранив настоящий путь обработки запроса"""
+    loader = Mock(return_value=fake_inference)
     monkeypatch.setattr("src.app.load_inference", loader)
     return loader
 

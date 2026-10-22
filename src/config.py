@@ -13,7 +13,8 @@ PYPROJECT_PATH = Path(__file__).resolve().parent.parent / "pyproject.toml"
 class Settings(BaseSettings):
     """Настройки из переменных окружения и файла .env, имя переменной совпадает с именем поля"""
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    # Пустая переменная считается незаданной, так compose передаёт необязательные настройки воркера
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", env_ignore_empty=True)
 
     log_level: str = "INFO"
     postgres_host: str = "localhost"
@@ -34,6 +35,23 @@ class Settings(BaseSettings):
     rabbitmq_password: SecretStr
     # Сколько задач может ждать в очереди, при заполнении брокер отказывает в публикации
     tasks_queue_limit: int = Field(default=100, gt=0)
+    # Размер пула потоков воркера, столько задач он выполняет одновременно
+    worker_concurrency: int = Field(default=4, gt=0)
+    # Сколько неподтверждённых сообщений брокер отдаёт воркеру, по умолчанию равно размеру пула
+    worker_prefetch: int | None = Field(default=None, gt=0)
+    # Длительность inference одной задачи в секундах, делает условия замеров воспроизводимыми
+    inference_seconds: float = Field(default=0.2, ge=0)
+    # Сколько раз задача доставляется воркеру, после этого она уходит в DLQ
+    task_max_deliveries: int = Field(default=3, gt=0)
+    # Пауза перед возвратом задачи в очередь после ошибки, чтобы не крутить повторы вхолостую
+    task_retry_delay_seconds: float = Field(default=1.0, ge=0)
+    # Сколько воркер ждёт завершения уже принятых задач при остановке
+    worker_graceful_timeout: float = Field(default=30.0, gt=0)
+
+    @property
+    def worker_prefetch_count(self) -> int:
+        """Вернуть prefetch_count воркера, без явного значения он равен размеру пула"""
+        return self.worker_prefetch or self.worker_concurrency
 
 
 @lru_cache
