@@ -79,7 +79,7 @@ class TaskMessage(BaseModel):
 
 
 class ModelInfo(BaseModel):
-    """Версия загруженной модели и alias на момент старта приложения"""
+    """Версия загруженной модели и alias на момент старта воркера"""
 
     name: str
     version: str
@@ -103,7 +103,7 @@ class ProcessResponse(BaseModel):
 
 
 class TaskAccepted(BaseModel):
-    """Задача принята в очередь, результат отдаёт GET /api/v1/tasks/{task_id}"""
+    """Задача принята в очередь, адрес результата приходит в заголовке Location"""
 
     task_id: UUID
     status: TaskStatus

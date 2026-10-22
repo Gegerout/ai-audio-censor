@@ -24,7 +24,7 @@ def settings(rabbitmq_settings, postgres_url) -> Settings:
     """Настройки API с брокером и базой из контейнеров и маленьким лимитом очереди
 
     Один поток и две секунды на задачу дают воркеру скорость ползадачи в секунду,
-    так Retry-After легко проверить по числу воркеров
+    так время повтора легко проверить по числу воркеров
     """
     url = urlsplit(postgres_url)
     return get_settings().model_copy(
@@ -88,7 +88,7 @@ async def test_full_queue_rejects_task_at_once(http, task_pool) -> None:
 
 
 async def test_retry_after_shrinks_with_more_workers(http, rabbit_connection) -> None:
-    """Retry-After равен времени разбора очереди и уменьшается, когда воркеров больше"""
+    """Время повтора равно времени разбора очереди и уменьшается, когда воркеров больше"""
     for _ in range(LIMIT):
         await post(http)
     await hold_one(rabbit_connection)

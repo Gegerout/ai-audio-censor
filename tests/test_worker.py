@@ -371,12 +371,7 @@ async def test_healthz_answers_during_inference(make_worker, fake_inference, out
     fake_inference.model.predict.side_effect = predict
     app = make_worker()
 
-    async def connected(_timeout):
-        # У брокера в памяти нет соединения, проверяется только то, что цикл событий отвечает
-        return True
-
     async with running(app) as broker:
-        app.broker.ping = connected
         pending = asyncio.create_task(publish(broker, task()))
         try:
             assert await asyncio.to_thread(entered.wait, 2)

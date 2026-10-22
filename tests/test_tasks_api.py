@@ -150,7 +150,7 @@ async def test_invalid_text_is_rejected_before_queue(api, task_pool, body) -> No
 
 
 async def test_full_queue_gives_503_at_once_without_pending(api, task_pool, monkeypatch) -> None:
-    """Заполненная очередь сразу даёт 503 с Retry-After, строка в базе откатывается"""
+    """Заполненная очередь сразу даёт 503 со временем повтора, строка в базе откатывается"""
     reject_with(monkeypatch, api, queue_full())
     monkeypatch.setattr(tasks, "queue_load", AsyncMock(return_value=(100, 1)))
 
@@ -179,7 +179,7 @@ async def test_full_queue_gives_503_at_once_without_pending(api, task_pool, monk
 async def test_broker_problem_gives_503_without_pending(
     api, task_pool, monkeypatch, error, detail
 ) -> None:
-    """Без брокера задача не принимается, клиент получает верхнюю границу Retry-After"""
+    """Без брокера задача не принимается, клиент получает верхнюю границу времени повтора"""
     reject_with(monkeypatch, api, error)
 
     response = await api.http.post("/api/v1/tasks", json={"text": "hello"})
@@ -231,7 +231,7 @@ async def test_old_process_endpoint_is_gone(client) -> None:
     [(100, 1, 5), (100, 2, 3), (1, 1, 1), (0, 1, 1), (100, 0, 30), (10_000, 1, 30)],
 )
 def test_retry_after_is_time_to_drain_queue(messages, consumers, expected) -> None:
-    """Retry-After равен времени, за которое воркеры разберут очередь, от 1 до 30 секунд"""
+    """Время повтора равно времени, за которое воркеры разберут очередь, от 1 до 30 секунд"""
     settings = get_settings().model_copy(update={"worker_concurrency": 4, "inference_seconds": 0.2})
 
     assert retry_after_seconds(messages, consumers, settings) == expected

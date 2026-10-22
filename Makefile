@@ -1,6 +1,6 @@
 .PHONY: install lint fmt test check run db up down logs mlflow mlflow-logs eda train register rabbitmq queue-limit worker worker-logs source experiment
 
-# Зависимости строго по uv.lock и хуки pre-commit
+# Зависимости строго по uv.lock и хуки проверок перед коммитом
 install:
 	uv sync --locked
 	uv run pre-commit install

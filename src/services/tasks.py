@@ -1,7 +1,8 @@
 """Приём задач от клиентов API и оценка времени, через которое стоит повторить запрос
 
-API не ждёт, пока в очереди освободится место. Если брокер отказал, задача не принимается,
-строка в базе откатывается, а клиент сразу получает 503 и Retry-After
+API не ждёт, пока в очереди освободится место
+Если брокер отказал, задача не принимается и строка в базе откатывается
+Клиент сразу получает 503 и время, через которое стоит повторить запрос
 """
 
 import asyncio
@@ -72,7 +73,7 @@ async def queue_load(broker: RabbitBroker) -> tuple[int, int]:
 
 
 async def estimate_retry_after(broker: RabbitBroker, settings: Settings) -> int:
-    """Retry-After для заполненной очереди, при сбое оценки берётся верхняя граница"""
+    """Время повтора для заполненной очереди, при сбое оценки берётся верхняя граница"""
     try:
         async with asyncio.timeout(settings.tasks_timeout_seconds):
             messages, consumers = await queue_load(broker)

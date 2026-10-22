@@ -37,7 +37,8 @@ class Settings(BaseSettings):
     tasks_queue_limit: int = Field(default=100, gt=0)
     # Сколько API ждёт базу и брокер при приёме задачи, дольше запрос не висит
     tasks_timeout_seconds: float = Field(default=2.0, gt=0)
-    # Retry-After, когда время разбора очереди оценить нельзя, примерно столько стартует воркер
+    # Через сколько секунд клиенту повторить запрос, когда время разбора очереди оценить нельзя
+    # Примерно столько стартует новый воркер
     tasks_retry_after_max_seconds: int = Field(default=30, gt=0)
     # Размер пула потоков воркера, столько задач он выполняет одновременно
     worker_concurrency: int = Field(default=4, gt=0)
