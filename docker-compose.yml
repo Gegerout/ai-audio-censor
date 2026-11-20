@@ -186,6 +186,7 @@ services:
       POSTGRES_PORT: "5432"
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_PORT: "5672"
+      RABBITMQ_MANAGEMENT_PORT: "15672"
     ports:
       - "8000:8000"
     # Модель загружает воркер, приложению MLflow не нужен, а без брокера оно не стартует

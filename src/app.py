@@ -5,6 +5,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from functools import partial
 
 import asyncpg
 from fastapi import FastAPI, Request, Response
@@ -12,7 +13,7 @@ from opentelemetry import trace
 
 from src import metrics, tracing
 from src.api import healthz, tasks, v1
-from src.broker import declare_topology, make_broker
+from src.broker import declare_topology, make_broker, observe_queue_limit
 from src.config import Settings, get_app_version, get_settings
 from src.logging_config import request_id_var, setup_logging, task_context
 from src.services.tasks import STORAGE_ERRORS
@@ -26,7 +27,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Создать пул БД и подключиться к брокеру до начала обработки запросов"""
     tracing.configure("api")
     settings: Settings = app.state.settings
-    metrics.configure("api", settings.inference_seconds)
+    if meter := metrics.configure("api", settings.inference_seconds):
+        meter.create_observable_gauge(
+            "pipeline_queue_limit", callbacks=[partial(observe_queue_limit, settings)]
+        )
+        for status in (202, 503):
+            metrics.requests.add(0, {"route": "/api/v1/tasks", "status": status})
     # Пул с min_size 0 не подключается при старте, поэтому приложение поднимется и без БД,
     # а /api/v1/health покажет, что она недоступна
     pool = await asyncpg.create_pool(

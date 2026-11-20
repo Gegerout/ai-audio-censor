@@ -6,7 +6,7 @@ from functools import lru_cache
 import psutil
 from opentelemetry import metrics
 from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
-from opentelemetry.metrics import Observation
+from opentelemetry.metrics import Meter, Observation
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.metrics.view import ExplicitBucketHistogramAggregation, View
@@ -49,7 +49,7 @@ class ComposeMetricReader(PeriodicExportingMetricReader):
 
 
 @lru_cache
-def configure(service: str, inference_seconds: float) -> None:
+def configure(service: str, inference_seconds: float) -> Meter | None:
     """Настроить экспорт, бакеты модели и сбор RSS в потоке чтения метрик"""
     if os.getenv("OTEL_SDK_DISABLED", "").lower() == "true":
         return
@@ -73,8 +73,10 @@ def configure(service: str, inference_seconds: float) -> None:
     )
     metrics.set_meter_provider(provider)
     process = psutil.Process()
-    provider.get_meter(SCOPE).create_observable_gauge(
+    sdk_meter = provider.get_meter(SCOPE)
+    sdk_meter.create_observable_gauge(
         "process.memory.usage",
         unit="By",
         callbacks=[lambda _: [Observation(process.memory_info().rss)]],
     )
+    return sdk_meter

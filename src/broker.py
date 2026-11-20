@@ -6,6 +6,7 @@
 import logging
 import re
 import time
+from collections.abc import Iterator
 
 import httpx
 from faststream.rabbit import (
@@ -17,6 +18,7 @@ from faststream.rabbit import (
     RabbitQueue,
 )
 from faststream.security import SASLPlaintext
+from opentelemetry.metrics import CallbackOptions, Observation
 from opentelemetry.trace import SpanKind
 
 from src import tracing
@@ -119,6 +121,27 @@ def queue_policy(settings: Settings) -> dict:
         "priority": 0,
         "definition": {"max-length": settings.tasks_queue_limit, "overflow": "reject-publish"},
     }
+
+
+def observe_queue_limit(settings: Settings, options: CallbackOptions) -> Iterator[Observation]:
+    """Прочитать действующее ограничение длины очереди в потоке сбора метрик"""
+    try:
+        response = httpx.get(
+            f"http://{settings.rabbitmq_host}:{settings.rabbitmq_management_port}"
+            f"/api/queues/%2F/{TASKS_QUEUE.name}",
+            params={"columns": "arguments,effective_policy_definition", "disable_stats": "true"},
+            auth=(settings.rabbitmq_user, settings.rabbitmq_password.get_secret_value()),
+            timeout=min(1.0, options.timeout_millis / 1000),
+        )
+        response.raise_for_status()
+        queue = response.json()
+    except (httpx.HTTPError, ValueError):
+        return
+    limits = (
+        queue["arguments"].get("x-max-length"),
+        queue["effective_policy_definition"].get("max-length"),
+    )
+    yield Observation(min((n for n in limits if n is not None), default=-1))
 
 
 async def apply_queue_policy(settings: Settings, client: httpx.AsyncClient) -> None:

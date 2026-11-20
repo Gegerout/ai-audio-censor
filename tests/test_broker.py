@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, Mock
 import httpx
 import pytest
 from faststream.rabbit import QueueType, RabbitBroker
+from opentelemetry.metrics import CallbackOptions
 
 from src import broker_setup
 from src.broker import (
@@ -19,6 +20,7 @@ from src.broker import (
     apply_queue_policy,
     declare_topology,
     make_broker,
+    observe_queue_limit,
     queue_policy,
 )
 from src.config import get_settings
@@ -37,6 +39,28 @@ def test_queue_policy_limits_only_tasks_queue(settings) -> None:
     assert policy["pattern"] == "^tasks$"
     assert policy["apply-to"] == "queues"
     assert policy["definition"] == {"max-length": 7, "overflow": "reject-publish"}
+
+
+@pytest.mark.parametrize(
+    ("policy", "arguments", "expected"),
+    [({"max-length": 30}, {}, 30), ({"max-length": 30}, {"x-max-length": 8}, 8), ({}, {}, -1)],
+)
+def test_observe_effective_queue_limit(settings, monkeypatch, policy, arguments, expected) -> None:
+    def respond(request):
+        assert request.url.raw_path.startswith(b"/api/queues/%2F/tasks?")
+        return httpx.Response(
+            200, json={"arguments": arguments, "effective_policy_definition": policy}
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        monkeypatch.setattr(httpx, "get", client.get)
+        (measurement,) = observe_queue_limit(settings, CallbackOptions())
+    assert measurement.value == expected
+
+
+def test_queue_limit_omits_sample_when_management_unavailable(settings, monkeypatch) -> None:
+    monkeypatch.setattr(httpx, "get", Mock(side_effect=httpx.ConnectError("offline")))
+    assert list(observe_queue_limit(settings, CallbackOptions())) == []
 
 
 def test_tasks_queue_is_durable_classic_with_dead_letters() -> None:

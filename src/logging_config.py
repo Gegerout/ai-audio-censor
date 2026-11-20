@@ -89,5 +89,8 @@ def setup_logging(level: str, service: str = "pipeline") -> None:
     # AMQP кадры на DEBUG содержат тело задачи и данные авторизации
     for name in ("aiormq", "aio_pika", "sqlalchemy.engine"):
         logging.getLogger(name).setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(
+        logging.WARNING if service == "api" and level.upper() == "INFO" else logging.NOTSET
+    )
     # Access лог uvicorn дублирует наш middleware, который пишет ещё и request_id
     logging.getLogger("uvicorn.access").disabled = True

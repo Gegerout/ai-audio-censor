@@ -1,13 +1,17 @@
 """Проверки экспорта метрик, бакетов и меток HTTP"""
 
 import socket
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 from uuid import uuid4
 
 import pytest
+from asgi_lifespan import LifespanManager
+from faststream.rabbit import TestRabbitBroker
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader, MetricExportResult
 
 from src import metrics
+from src.app import app
+from src.broker import observe_queue_limit
 
 
 @pytest.mark.parametrize(("seconds", "expected"), [(0, 0.005), (0.2, 0.2), (0.8, 0.8)])
@@ -71,6 +75,23 @@ def test_compose_reader_exports_accumulated_count_after_profile_starts(monkeypat
         lookup.assert_called_with("collector", None, type=socket.SOCK_STREAM)
     finally:
         provider.shutdown()
+
+
+async def test_api_registers_limit_and_initial_request_counts(monkeypatch) -> None:
+    meter = Mock()
+    requests = Mock()
+    monkeypatch.setattr(metrics, "configure", Mock(return_value=meter))
+    monkeypatch.setattr(metrics, "requests", requests)
+    async with TestRabbitBroker(app.state.broker, connect_only=True), LifespanManager(app):
+        (name,), kwargs = meter.create_observable_gauge.call_args
+        (callback,) = kwargs["callbacks"]
+        assert name == "pipeline_queue_limit"
+        assert callback.func is observe_queue_limit
+        assert callback.args == (app.state.settings,)
+        assert requests.add.call_args_list == [
+            call(0, {"route": "/api/v1/tasks", "status": 202}),
+            call(0, {"route": "/api/v1/tasks", "status": 503}),
+        ]
 
 
 async def test_http_labels_use_route_template_and_status(client, monkeypatch) -> None:
