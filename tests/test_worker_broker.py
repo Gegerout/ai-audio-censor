@@ -127,12 +127,17 @@ async def test_worker_takes_only_prefetch_messages(
     assert await task_pool.fetchval("SELECT max(attempts) FROM tasks") == 1
 
 
-async def test_malformed_message_reaches_dead_letter_queue(make_worker, channel) -> None:
+@pytest.mark.parametrize(
+    "body",
+    [b"not json", task().model_copy(update={"text": "a\x00b"}).model_dump_json().encode()],
+    ids=["invalid-json", "nul-in-text"],
+)
+async def test_malformed_message_reaches_dead_letter_queue(make_worker, channel, body) -> None:
     """Некорректное сообщение попадает в DLQ, которую воркер объявил сам"""
     app = make_worker()
 
     async with TestApp(app):
-        await publish(app, b"not json")
+        await publish(app, body)
 
         await wait_until(lambda: _ready_equals(channel, DEAD_LETTER_QUEUE.name, 1))
     assert await ready(channel, TASKS_QUEUE.name) == 0

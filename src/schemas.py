@@ -8,15 +8,17 @@ from uuid import UUID
 from pydantic import AfterValidator, AwareDatetime, BaseModel, Field
 
 
-def reject_blank(value: str) -> str:
-    """Отклонить пустое содержимое, сохранив исходные пробелы и позиции"""
+def validate_task_text(value: str) -> str:
+    """Проверить текст до записи в Postgres, сохранив исходные позиции"""
     if not value.strip():
         raise ValueError("Текст не должен состоять только из пробелов")
+    if "\x00" in value:
+        raise ValueError("Текст содержит нулевой символ")
     return value
 
 
 # Один тип текста для API и очереди, поэтому проверки входа везде одинаковые
-TaskText = Annotated[str, Field(min_length=1, max_length=10000), AfterValidator(reject_blank)]
+TaskText = Annotated[str, Field(min_length=1, max_length=10000), AfterValidator(validate_task_text)]
 
 
 class HealthStatus(StrEnum):

@@ -140,7 +140,8 @@ async def test_unknown_task_is_not_found(api) -> None:
 
 
 @pytest.mark.parametrize(
-    "body", [{}, {"text": ""}, {"text": " \n "}, {"text": 123}, {"text": "x" * 10001}]
+    "body",
+    [{}, {"text": ""}, {"text": " \n "}, {"text": 123}, {"text": "a\x00b"}, {"text": "x" * 10001}],
 )
 async def test_invalid_text_is_rejected_before_queue(api, task_pool, body) -> None:
     """Некорректный текст отклоняется с 422 и не попадает ни в базу, ни в очередь"""
