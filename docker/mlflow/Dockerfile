@@ -1,4 +1,4 @@
-ARG PYTHON_IMAGE=python:3.11-slim
+ARG PYTHON_IMAGE=python:3.11.18-slim
 
 FROM ${PYTHON_IMAGE} AS builder
 

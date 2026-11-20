@@ -27,7 +27,7 @@ x-logging: &logging
 
 services:
   mlflow-db:
-    image: postgres:17-alpine
+    image: postgres:17.11-alpine
     environment:
       POSTGRES_USER: ${MLFLOW_POSTGRES_USER:-mlflow}
       POSTGRES_PASSWORD: ${MLFLOW_POSTGRES_PASSWORD:?задайте MLFLOW_POSTGRES_PASSWORD в .env}
@@ -79,7 +79,7 @@ services:
     restart: unless-stopped
 
   db:
-    image: postgres:17-alpine
+    image: postgres:17.11-alpine
     environment:
       POSTGRES_USER: ${POSTGRES_USER:?задайте POSTGRES_USER в .env}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?задайте POSTGRES_PASSWORD в .env}
@@ -106,7 +106,7 @@ services:
     restart: unless-stopped
 
   rabbitmq:
-    image: rabbitmq:4.4-management-alpine
+    image: rabbitmq:4.4.0-management-alpine
     # Данные брокера лежат в папке с именем узла, постоянное имя сохраняет их при пересоздании контейнера
     hostname: rabbitmq
     environment:

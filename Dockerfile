@@ -1,5 +1,5 @@
 # Обе стадии строятся из одного образа, потому что .venv ссылается на его интерпретатор Python
-ARG PYTHON_IMAGE=python:3.11-slim
+ARG PYTHON_IMAGE=python:3.11.18-slim
 
 FROM ${PYTHON_IMAGE} AS builder
 
