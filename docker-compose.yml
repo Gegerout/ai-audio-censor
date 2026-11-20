@@ -122,9 +122,6 @@ services:
   rabbitmq-setup:
     build: .
     # Разовая задача, задаёт лимит очереди задач и объявляет очереди, затем завершается
-    # Отдельный профиль, потому что up с ожиданием считает ошибкой даже успешное завершение
-    # Её явно запускает make up и make rabbitmq после того, как брокер готов
-    profiles: ["setup"]
     command: ["python", "-m", "src.broker_setup"]
     env_file: .env
     environment:
@@ -141,6 +138,25 @@ services:
     logging: *logging
     restart: "no"
 
+  model-init:
+    build: .
+    command: ["python", "-m", "ml.bootstrap"]
+    env_file: .env
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_ENABLE_ARTIFACTS_PROGRESS_BAR: "false"
+    volumes:
+      - ./ml:/app/ml:ro
+      - ./data:/app/data:ro
+    depends_on:
+      mlflow:
+        condition: service_healthy
+    networks: [backend]
+    healthcheck:
+      disable: true
+    restart: "no"
+    logging: *logging
+
   app:
     build: .
     # Healthcheck приложения задан в Dockerfile и работает в любом окружении, не только в compose
@@ -155,6 +171,8 @@ services:
       - "8000:8000"
     # Модель загружает воркер, приложению MLflow не нужен, а без брокера оно не стартует
     depends_on:
+      rabbitmq-setup:
+        condition: service_completed_successfully
       db:
         condition: service_healthy
       rabbitmq:
@@ -185,6 +203,10 @@ services:
       WORKER_PREFETCH: ${WORKER_PREFETCH:-}
     # Портов наружу нет, поэтому воркеров можно запускать несколько через scale
     depends_on:
+      rabbitmq-setup:
+        condition: service_completed_successfully
+      model-init:
+        condition: service_completed_successfully
       db:
         condition: service_healthy
       rabbitmq:

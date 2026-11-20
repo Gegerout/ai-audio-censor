@@ -32,7 +32,7 @@ db:
 
 # Весь стенд в Docker, образ пересобирается из текущего кода
 # Лимит очереди и очереди задаются до запуска остальных сервисов
-up: rabbitmq
+up:
 	docker compose up -d --build --wait
 
 # Остановить стенд, данные Postgres в volume сохраняются
@@ -76,7 +76,10 @@ worker-logs:
 SOURCE_FILE ?= $(firstword $(wildcard data/raw/*/train.csv))
 RUN ?= default
 source:
-	docker compose run --rm --build source --file $(SOURCE_FILE) --run $(RUN) \
+ifeq ($(strip $(SOURCE_FILE)),)
+	uv run --locked python -c 'from pathlib import Path; from ml.data import download_split; download_split("train", Path("data/raw"))'
+endif
+	docker compose run --rm --build source --file $(or $(SOURCE_FILE),data/raw/*/train.csv) --run $(RUN) \
 		$(if $(START),--start $(START)) $(if $(COUNT),--count $(COUNT))
 
 # Эксперимент с лимитом очереди и без него, около пяти минут, данные и графики в docs/experiment
