@@ -11,13 +11,12 @@ from urllib.parse import urlsplit
 from opentelemetry import trace
 from opentelemetry.context import Context
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, SpanExportResult
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 from opentelemetry.util.types import Attributes
 
-from src.config import get_app_version
+from src.config import get_telemetry_resource
 
 tracer = trace.get_tracer("ai-audio-censor")
 propagator = TraceContextTextMapPropagator()
@@ -61,16 +60,7 @@ def configure(service: str) -> None:
         exporter = ComposeSpanExporter(endpoint)
     else:
         return
-    defaults = Resource(
-        {
-            "service.version": get_app_version(),
-            "deployment.environment.name": os.getenv("DEPLOYMENT_ENVIRONMENT") or "local",
-        }
-    )
-    resource = defaults.merge(
-        Resource.create({"service.name": os.getenv("OTEL_SERVICE_NAME") or service})
-    )
-    provider = TracerProvider(resource=resource)
+    provider = TracerProvider(resource=get_telemetry_resource(service))
     provider.add_span_processor(BatchSpanProcessor(exporter))
     trace.set_tracer_provider(provider)
 

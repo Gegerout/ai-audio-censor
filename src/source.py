@@ -32,7 +32,7 @@ from opentelemetry import trace
 from opentelemetry.context import Context
 from pydantic import ValidationError
 
-from src import tracing
+from src import metrics, tracing
 from src.broker import declare_topology, make_broker, publish_message
 from src.config import Settings, get_settings
 from src.logging_config import setup_logging, task_context
@@ -155,7 +155,11 @@ class Source:
                 with tracing.span(
                     "source wait", attributes={"backoff.seconds": self.backoff.delay}
                 ):
-                    await self._pause()
+                    started = time.monotonic()
+                    try:
+                        await self._pause()
+                    finally:
+                        metrics.wait_seconds.add(time.monotonic() - started)
             if self.stop.is_set():
                 return False
             # Время приёма ставится при каждой попытке, в очередь задача попадает только сейчас
@@ -170,6 +174,7 @@ class Source:
             except DeliveryError:
                 # Очередь заполнена, брокер отказал по политике лимита очереди
                 self.stats.rejected += 1
+                metrics.refused.add(1)
                 self.backoff.on_reject()
                 trace.get_current_span().add_event(
                     "broker nack", {"backoff.seconds": self.backoff.delay}
@@ -185,6 +190,7 @@ class Source:
             else:
                 log.info("task published", extra={"row": task.row})
                 self.stats.published += 1
+                metrics.published.add(1)
                 self.backoff.on_accept()
                 self._maybe_report()
                 return True
@@ -252,6 +258,10 @@ async def main(argv: Sequence[str] | None = None) -> SourceStats:
     settings = get_settings()
     setup_logging(settings.log_level, "source")
     tracing.configure("source")
+    metrics.configure("source", settings.inference_seconds)
+    metrics.published.add(0)
+    metrics.refused.add(0)
+    metrics.wait_seconds.add(0)
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     # По SIGTERM и Ctrl+C источник прерывает паузу, пишет итог и строку для продолжения

@@ -11,6 +11,7 @@ from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import NoReturn, TypeVar
 
 import asyncpg
@@ -22,7 +23,7 @@ from faststream.rabbit.annotations import RabbitMessage
 from opentelemetry import trace
 from pydantic import ValidationError
 
-from src import tracing
+from src import metrics, tracing
 from src.broker import TASKS_EXCHANGE, TASKS_QUEUE, declare_dead_letters, make_broker
 from src.config import Settings, get_settings
 from src.logging_config import setup_logging, task_context
@@ -50,12 +51,15 @@ def run_inference(
         },
     ):
         started = time.perf_counter()
-        response = inference.process(text)
-        remaining = seconds - (time.perf_counter() - started)
-        if remaining > 0:
-            # Пауза имитирует тяжёлую модель и идёт в потоке пула, цикл событий она не блокирует
-            time.sleep(remaining)
-        return response
+        try:
+            response = inference.process(text)
+            remaining = seconds - (time.perf_counter() - started)
+            if remaining > 0:
+                # Пауза имитирует тяжёлую модель и идёт в потоке пула, цикл событий она не блокирует
+                time.sleep(remaining)
+            return response
+        finally:
+            metrics.inference_duration.record(time.perf_counter() - started)
 
 
 async def create_pool(settings: Settings) -> asyncpg.Pool:
@@ -135,11 +139,15 @@ class TaskProcessor:
                 "delivery.attempt": attempt.attempts,
             },
         ):
-            await self._store(
+            saved = await self._store(
                 complete_task(
                     self.pool, task.task_id, spans, response.model.name, response.model.version
                 )
             )
+        if saved:
+            metrics.processed.add(1, {"result": "ok"})
+            elapsed = (datetime.now(UTC) - task.enqueued_at).total_seconds()
+            metrics.task_duration.record(max(0.0, elapsed))
         log.info(
             "task done",
             extra={"attempts": attempt.attempts, "spans": len(spans)},
@@ -216,18 +224,31 @@ def create_worker(
             batch = message.headers.get("batch")
             if isinstance(batch, str) and batch:
                 span.set_attribute("batch.name", batch)
+            if redelivered:
+                metrics.redeliveries.add(1)
+            metrics.in_flight.add(1)
             try:
                 await state.processor.handle(message.body)
             except RejectMessage as exc:
-                span.add_event("requeue" if exc.extra_options.get("requeue") else "dlq")
+                requeue = exc.extra_options.get("requeue")
+                metrics.processed.add(1, {"result": "error" if requeue else "dlq"})
+                span.add_event("requeue" if requeue else "dlq")
                 raise
             except Exception:
+                metrics.processed.add(1, {"result": "dlq"})
                 span.add_event("dlq")
                 raise
+            finally:
+                metrics.in_flight.add(-1)
 
     async def startup() -> None:
         """Один раз загрузить модель и подключиться к базе до начала приёма задач"""
         tracing.configure("worker")
+        metrics.configure("worker", settings.inference_seconds)
+        metrics.redeliveries.add(0)
+        metrics.in_flight.add(0)
+        for result in ("ok", "error", "dlq"):
+            metrics.processed.add(0, {"result": result})
         inference = await asyncio.get_running_loop().run_in_executor(None, load_model, settings)
         pool = await connect(settings)
         await ensure_schema(pool)

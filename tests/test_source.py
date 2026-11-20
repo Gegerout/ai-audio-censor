@@ -18,7 +18,7 @@ from aiormq.exceptions import (
 from faststream.rabbit import RabbitBroker, TestRabbitBroker
 from pamqp.commands import Basic
 
-from src import source
+from src import metrics, source
 from src.broker import TASKS_EXCHANGE, TASKS_QUEUE
 from src.config import get_settings
 from src.logging_config import JsonFormatter
@@ -212,8 +212,10 @@ async def test_invalid_row_is_skipped(settings) -> None:
     assert (stats.published, stats.skipped, stats.next_row) == (2, 1, 3)
 
 
-async def test_stop_interrupts_pause(settings, caplog) -> None:
+async def test_stop_interrupts_pause(settings, caplog, monkeypatch) -> None:
     """Сигнал остановки прерывает паузу сразу, итог сообщает строку для продолжения"""
+    wait_seconds = Mock()
+    monkeypatch.setattr(metrics, "wait_seconds", wait_seconds)
     slow = settings.model_copy(
         update={"source_initial_delay_seconds": 30, "source_max_delay_seconds": 30}
     )
@@ -226,6 +228,8 @@ async def test_stop_interrupts_pause(settings, caplog) -> None:
     assert (stats.published, stats.next_row) == (0, 0)
     assert broker.publish.await_count == 1
     assert "source publishing interrupted" in caplog.messages
+    wait_seconds.add.assert_called_once()
+    assert 0 < wait_seconds.add.call_args.args[0] < 2
 
 
 async def test_progress_report_contains_rate(settings, caplog) -> None:

@@ -19,7 +19,7 @@ from faststream.rabbit import RabbitBroker, TestRabbitBroker
 from faststream.rabbit.message import RabbitMessage
 from httpx import ASGITransport, AsyncClient
 
-from src import worker
+from src import metrics, worker
 from src.broker import DEAD_LETTER_EXCHANGE, DEAD_LETTER_QUEUE, TASKS_EXCHANGE, TASKS_ROUTING_KEY
 from src.config import Settings, get_settings
 from src.schemas import TaskMessage, TaskStatus
@@ -160,6 +160,27 @@ async def test_duplicate_delivery_skips_inference(make_worker, fake_inference, o
 
     assert fake_inference.model.predict.call_count == 1
     assert outcomes == [ACK, ACK]
+
+
+async def test_concurrent_duplicates_count_one_saved_result(
+    make_worker, fake_inference, outcomes, monkeypatch
+) -> None:
+    both_started = threading.Barrier(2)
+    predict = fake_inference.model.predict.side_effect
+
+    def concurrent_predict(frame):
+        both_started.wait(timeout=5)
+        return predict(frame)
+
+    fake_inference.model.predict.side_effect = concurrent_predict
+    processed = Mock()
+    monkeypatch.setattr(metrics, "processed", processed)
+    message = task()
+    async with running(make_worker(worker_concurrency=2)) as broker:
+        await asyncio.gather(publish(broker, message), publish(broker, message))
+
+    assert outcomes == [ACK, ACK]
+    assert [c.args for c in processed.add.call_args_list if c.args[0]] == [(1, {"result": "ok"})]
 
 
 @pytest.mark.parametrize(

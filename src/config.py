@@ -1,9 +1,11 @@
 """Настройки приложения из переменных окружения и версия из pyproject.toml"""
 
+import os
 import tomllib
 from functools import lru_cache
 from pathlib import Path
 
+from opentelemetry.sdk.resources import Resource
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -76,3 +78,16 @@ def get_app_version() -> str:
     """Вернуть версию приложения из pyproject.toml"""
     with PYPROJECT_PATH.open("rb") as file:
         return tomllib.load(file)["project"]["version"]
+
+
+def get_telemetry_resource(service: str) -> Resource:
+    """Общие атрибуты процесса для трейсов и метрик"""
+    defaults = Resource(
+        {
+            "service.version": get_app_version(),
+            "deployment.environment.name": os.getenv("DEPLOYMENT_ENVIRONMENT") or "local",
+        }
+    )
+    return defaults.merge(
+        Resource.create({"service.name": os.getenv("OTEL_SERVICE_NAME") or service})
+    )

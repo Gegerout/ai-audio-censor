@@ -38,6 +38,7 @@ web = [
     "opentelemetry-exporter-otlp-proto-http==1.45.1",
     "opentelemetry-sdk==1.45.1",
     "pandas>=3.0.6",
+    "psutil>=7.2.2",
     "pydantic-settings>=2.15.0",
     "scikit-learn==1.9.1",
     "uvicorn[standard]>=0.53.0",

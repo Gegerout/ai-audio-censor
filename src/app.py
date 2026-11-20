@@ -10,7 +10,7 @@ import asyncpg
 from fastapi import FastAPI, Request, Response
 from opentelemetry import trace
 
-from src import tracing
+from src import metrics, tracing
 from src.api import healthz, tasks, v1
 from src.broker import declare_topology, make_broker
 from src.config import Settings, get_app_version, get_settings
@@ -26,6 +26,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Создать пул БД и подключиться к брокеру до начала обработки запросов"""
     tracing.configure("api")
     settings: Settings = app.state.settings
+    metrics.configure("api", settings.inference_seconds)
     # Пул с min_size 0 не подключается при старте, поэтому приложение поднимется и без БД,
     # а /api/v1/health покажет, что она недоступна
     pool = await asyncpg.create_pool(
@@ -60,6 +61,7 @@ async def log_requests(
     request: Request, call_next: Callable[[Request], Awaitable[Response]]
 ) -> Response:
     """Выдать запросу request_id и залогировать метод, путь, статус и длительность"""
+    start = time.perf_counter()
     with tracing.span(
         request.method,
         kind=trace.SpanKind.SERVER,
@@ -68,7 +70,7 @@ async def log_requests(
     ) as span:
         status = 500
         try:
-            response = await _log_request(request, call_next)
+            response = await _log_request(request, call_next, start)
             status = response.status_code
             return response
         finally:
@@ -76,16 +78,17 @@ async def log_requests(
             if status >= 500:
                 span.set_status(trace.StatusCode.ERROR)
             route = getattr(request.scope.get("route"), "path", "unmatched")
+            metrics.requests.add(1, {"route": route, "status": status})
+            metrics.api_duration.record(time.perf_counter() - start, {"route": route})
             span.set_attribute("http.route", route)
             span.update_name(f"{request.method} {route}")
 
 
 async def _log_request(
-    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    request: Request, call_next: Callable[[Request], Awaitable[Response]], start: float
 ) -> Response:
     request_id = uuid.uuid4().hex
     token = request_id_var.set(request_id)
-    start = time.perf_counter()
     try:
         response = await call_next(request)
         # Healthcheck Docker дёргает /healthz каждые 10 секунд, на INFO он забил бы полезные логи
