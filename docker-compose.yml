@@ -5,6 +5,7 @@ include:
   - observability/compose.yaml
 
 x-tracing: &tracing
+  COMPOSE_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
   DEPLOYMENT_ENVIRONMENT: ${DEPLOYMENT_ENVIRONMENT:-local}
   OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-false}
   OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}

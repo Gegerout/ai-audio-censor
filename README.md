@@ -1034,11 +1034,46 @@ POST /api/v1/tasks
 
 Для строки CSV корневой спан называется `source task`. Каждая строка получает отдельный трейс, а имя запуска `--run` попадает в `batch.name` на источнике и воркере. Если очередь полна, в трейсе строки видны неудачная публикация, событие `broker nack`, пауза `source wait` и следующая попытка. При повторной доставке воркер создаёт ещё один `process` в том же трейсе. Атрибут `delivery.attempt` показывает номер попытки, события `requeue` и `dlq` — её исход. У ошибок обработки и ответа 503 есть статус `ERROR` и событие `exception`.
 
-Экспортёр отправляет завершённые спаны в OpenTelemetry Collector по OTLP/HTTP в фоновом потоке. Адрес задаётся в `.env` через `OTEL_EXPORTER_OTLP_ENDPOINT` (базовый URL) или `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` (полный URL с `/v1/traces`). По умолчанию адрес пуст и экспорт выключен. `OTEL_SDK_DISABLED=true` отключает SDK и при заданном адресе. Лимит очереди в памяти и повторы экспортёра ограничены, поэтому длительная недоступность Collector может привести к потере спанов. У короткого запуска источника завершающая отправка выполняется при штатном выходе процесса. [Экспорт OTLP](https://opentelemetry.io/docs/specs/otel/protocol/exporter/)
+Экспортёр отправляет завершённые спаны в OpenTelemetry Collector по OTLP/HTTP. В Compose адрес локального Collector уже задан. Фоновый обработчик проверяет имя сервиса перед отправкой пакета. Если профиль выключен, пакет пропускается. После включения профиля следующие пакеты уходят автоматически. Короткий запуск источника отправляет последний пакет при штатном выходе. Для собственного Collector задайте `OTEL_EXPORTER_OTLP_ENDPOINT` (базовый URL) или `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` (полный URL с `/v1/traces`). Полностью отключить SDK можно через `OTEL_SDK_DISABLED=true`. [Экспорт OTLP](https://opentelemetry.io/docs/specs/otel/protocol/exporter/)
 
 В Compose у сервисов заданы имена `api`, `source` и `worker`. Их можно менять через `OTEL_API_SERVICE_NAME`, `OTEL_SOURCE_SERVICE_NAME` и `OTEL_WORKER_SERVICE_NAME`. Версия по умолчанию берётся из `pyproject.toml`, окружение из `DEPLOYMENT_ENVIRONMENT`, а `service.instance.id` SDK выдаёт каждому процессу отдельно. Атрибуты ресурса можно переопределить через `OTEL_RESOURCE_ATTRIBUTES`. При масштабировании оставьте автоматический `service.instance.id`, чтобы различать реплики.
 
 На стенде выбран `OTEL_TRACES_SAMPLER=parentbased_always_on`. Каждая новая задача попадает в выборку, а дочерние спаны следуют решению отправителя. Для потока в сотни задач в секунду начальной настройкой может быть `parentbased_traceidratio` с `OTEL_TRACES_SAMPLER_ARG=0.1`. При этой доле в среднем сохраняется один новый трейс из десяти целиком. Если нужно сохранить все редкие ошибки, решение об отборе стоит принимать в Collector после получения спанов. [Настройки SDK и семплирования](https://opentelemetry.io/docs/specs/otel/configuration/sdk-environment-variables/)
+
+### Запуск и поиск в Tempo
+
+```bash
+docker compose --profile traces up -d --build --wait
+curl -fsS http://127.0.0.1:3200/ready
+```
+
+Профиль `traces` добавляет Collector и Tempo. Для одновременного поиска в логах и трейсах включите оба профиля или запустите `docker compose --profile observability up -d --wait`. OTLP-порт доступен внутри сети Compose. HTTP API Tempo слушает на loopback, порт задаётся через `TEMPO_PORT`.
+
+Для стенда выбран Tempo в однопроцессном режиме. Он хранит блоки на локальном томе `tempo-data`, ищет по атрибутам через TraceQL и открывает трейс по идентификатору из лога. Срок хранения блоков — 48 часов. В Collector первым стоит `memory_limiter`: при нехватке памяти он возвращает отказ до накопления новых спанов. Затем `batch` объединяет спаны для отправки в Tempo. При недоступности Tempo очередь экспортёра вмещает 64 пакета, повторы для каждого ограничены 15 секундами. При длительном сбое часть спанов теряется. [Конфигурация Collector](https://opentelemetry.io/docs/collector/configuration/) · [HTTP API Tempo](https://grafana.com/docs/tempo/latest/api_docs/)
+
+При отправке 300 строк и двух работающих воркерах снимок `docker stats --no-stream` показал 16,02 МиБ у Collector и 71,73 МиБ у Tempo. Лимиты контейнеров — 96 и 240 МиБ соответственно, всего 336 МиБ для профиля трейсов.
+
+Для проверки создайте задачу или возьмите готовый `task_id` из БД.
+
+```bash
+task_id=$(curl -fsS -H 'Content-Type: application/json' -d '{"text":"hello"}' \
+  http://127.0.0.1:8000/api/v1/tasks | jq -er .task_id)
+```
+
+Через несколько секунд после завершения задачи найдите трейс по `task_id`. Если `trace_id` уже известен из лога, достаточно последней команды.
+
+```bash
+trace_id=$(curl -fsSG http://127.0.0.1:3200/api/search \
+  --data-urlencode "q={ span.task.id = \"$task_id\" }" | jq -er '.traces[0].traceID')
+
+curl -fsS -H 'Accept: application/json' "http://127.0.0.1:3200/api/traces/$trace_id" \
+  | jq -r '.batches[].scopeSpans[].spans[] | [.name,
+      (((.endTimeUnixNano | tonumber) - (.startTimeUnixNano | tonumber)) / 1e6),
+      ([.attributes[]? | select(.key == "queue.wait.seconds") | .value.doubleValue][0] // "-")]
+      | @tsv'
+```
+
+Столбцы вывода — имя спана, его длительность в миллисекундах и ожидание в очереди в секундах для `process`.
 
 ## Структура
 

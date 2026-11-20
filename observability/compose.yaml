@@ -1,5 +1,4 @@
-x-logs: &logs
-  profiles: [logs, observability]
+x-observer: &observer
   pull_policy: build
   restart: unless-stopped
   logging:
@@ -10,7 +9,8 @@ x-logs: &logs
 
 services:
   loki:
-    <<: *logs
+    <<: *observer
+    profiles: [logs, observability]
     image: ${COMPOSE_PROJECT_NAME}-loki:${LOKI_VERSION:-3.6.3}
     build:
       context: .
@@ -32,7 +32,8 @@ services:
       retries: 18
 
   alloy:
-    <<: *logs
+    <<: *observer
+    profiles: [logs, observability]
     image: ${COMPOSE_PROJECT_NAME}-alloy:${ALLOY_VERSION:-v1.11.2}
     build:
       context: .
@@ -55,6 +56,54 @@ services:
       timeout: 3s
       retries: 12
 
+  otel-collector:
+    <<: *observer
+    profiles: [traces, observability]
+    image: ${COMPOSE_PROJECT_NAME}-otel-collector:${OTEL_COLLECTOR_VERSION:-0.140.0}
+    build:
+      context: .
+      args:
+        BASE_IMAGE: otel/opentelemetry-collector:${OTEL_COLLECTOR_VERSION:-0.140.0}
+    command: [--config=/etc/otelcol/config.yaml]
+    mem_limit: 96m
+    environment:
+      GOMEMLIMIT: 68MiB
+    networks: [backend, default]
+    volumes:
+      - ./otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    healthcheck:
+      test: [CMD, /bin/busybox, wget, -qO, /dev/null, 'http://127.0.0.1:13133/']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  tempo:
+    <<: *observer
+    profiles: [traces, observability]
+    image: ${COMPOSE_PROJECT_NAME}-tempo:${TEMPO_VERSION:-2.9.0}
+    build:
+      context: .
+      args:
+        BASE_IMAGE: grafana/tempo:${TEMPO_VERSION:-2.9.0}
+    command: [-config.file=/etc/tempo.yaml]
+    mem_limit: 240m
+    environment:
+      GOMEMLIMIT: 180MiB
+    ports:
+      - "127.0.0.1:${TEMPO_PORT:-3200}:3200"
+    volumes:
+      - ./tempo.yaml:/etc/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    healthcheck:
+      test: [CMD, /bin/busybox, wget, -qO, /dev/null, 'http://127.0.0.1:3200/ready']
+      interval: 5s
+      timeout: 3s
+      retries: 18
+
+networks:
+  backend:
+
 volumes:
+  tempo-data:
   loki-data:
   alloy-data:

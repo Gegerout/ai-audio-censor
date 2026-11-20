@@ -1,0 +1,32 @@
+extensions:
+  health_check:
+    endpoint: 127.0.0.1:13133
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 72
+    spike_limit_mib: 16
+  batch:
+    timeout: 1s
+    send_batch_size: 256
+exporters:
+  otlphttp:
+    endpoint: http://tempo:4318
+    sending_queue:
+      queue_size: 64
+    retry_on_failure:
+      initial_interval: 1s
+      max_interval: 5s
+      max_elapsed_time: 15s
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp]

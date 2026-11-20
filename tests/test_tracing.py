@@ -1,14 +1,44 @@
 """Проверки настройки SDK и границы контекста задачи"""
 
-from unittest.mock import AsyncMock
+import socket
+from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 from opentelemetry import trace
+from opentelemetry.sdk.trace.export import SpanExportResult
 from opentelemetry.sdk.trace.sampling import ALWAYS_OFF
 
 from src import tracing
 from src.config import get_settings
 from src.source import Source, SourceTask
+
+
+def test_compose_profile_can_start_after_the_application(monkeypatch) -> None:
+    monkeypatch.setenv("OTEL_SDK_DISABLED", "false")
+    monkeypatch.setenv("OTEL_TRACES_SAMPLER", "always_on")
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", raising=False)
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
+    monkeypatch.setenv("COMPOSE_OTLP_TRACES_ENDPOINT", "http://collector:4318/v1/traces")
+    providers = []
+    monkeypatch.setattr(trace, "set_tracer_provider", providers.append)
+    tracing.configure.__wrapped__("api")
+    (provider,) = providers
+    lookup = Mock(side_effect=[socket.gaierror(), []])
+    monkeypatch.setattr(socket, "getaddrinfo", lookup)
+    send = Mock(return_value=SpanExportResult.SUCCESS)
+    monkeypatch.setattr(tracing.OTLPSpanExporter, "export", send)
+    try:
+        tracer = provider.get_tracer(__name__)
+        tracer.start_span("profile off").end()
+        provider.force_flush()
+        send.assert_not_called()
+        tracer.start_span("profile on").end()
+        provider.force_flush()
+        (batch,) = send.call_args.args
+        assert [s.name for s in batch] == ["profile on"]
+        lookup.assert_called_with("collector", None, type=socket.SOCK_STREAM)
+    finally:
+        provider.shutdown()
 
 
 def test_sdk_respects_environment_and_disabled_export(monkeypatch) -> None:
