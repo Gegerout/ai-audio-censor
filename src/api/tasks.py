@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
 
+from src import tracing
 from src.logging_config import task_context
 from src.schemas import ErrorResponse, TaskAccepted, TaskRequest, TaskResponse, TaskStatus
 from src.services.tasks import STORAGE_ERRORS, TaskRejectedError, submit_task
@@ -36,6 +37,7 @@ async def create_task(body: TaskRequest, request: Request, response: Response) -
                 state.db_pool, state.broker, state.settings, body.text, task_id=task_id
             )
         except TaskRejectedError as exc:
+            tracing.record_error(exc)
             log.warning(
                 "task rejected",
                 extra={"status": 503, "reason": exc.reason, "retry_after": exc.retry_after},

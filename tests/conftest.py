@@ -28,9 +28,13 @@ import pytest
 from asgi_lifespan import LifespanManager
 from faststream.rabbit import TestRabbitBroker
 from httpx import ASGITransport, AsyncClient
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from testcontainers.community.postgres import PostgresContainer
 from testcontainers.community.rabbitmq import RabbitMqContainer
 
+from src import tracing
 from src.app import app
 from src.broker import DEAD_LETTER_QUEUE, QUEUE_POLICY_NAME, TASKS_QUEUE, apply_queue_policy
 from src.schemas import ModelInfo
@@ -146,3 +150,14 @@ async def client() -> AsyncIterator[AsyncClient]:
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as http:
             yield http
+
+
+@pytest.fixture
+def spans(monkeypatch):
+    """Собрать завершённые спаны обычных обработчиков без сетевого экспортёра"""
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider(shutdown_on_exit=False)
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(tracing, "tracer", provider.get_tracer("pipeline-test"))
+    yield exporter
+    provider.shutdown()

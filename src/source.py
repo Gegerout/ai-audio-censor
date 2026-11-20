@@ -28,9 +28,12 @@ from aiormq.exceptions import (
     PublishError,
 )
 from faststream.rabbit import RabbitBroker
+from opentelemetry import trace
+from opentelemetry.context import Context
 from pydantic import ValidationError
 
-from src.broker import TASKS_EXCHANGE, TASKS_ROUTING_KEY, declare_topology, make_broker
+from src import tracing
+from src.broker import declare_topology, make_broker, publish_message
 from src.config import Settings, get_settings
 from src.logging_config import setup_logging, task_context
 from src.schemas import TaskMessage
@@ -113,12 +116,19 @@ class Source:
         self._started_at = self._reported_at = clock()
         self._reported_published = self._reported_rejected = 0
 
-    async def run(self, tasks: Iterable[SourceTask]) -> SourceStats:
+    async def run(self, tasks: Iterable[SourceTask], *, batch: str | None = None) -> SourceStats:
         """Опубликовать задачи по очереди, следующая строка читается после подтверждения"""
         for task in tasks:
             self.stats.next_row = task.row
-            with task_context(task.task_id):
-                if self.stop.is_set() or not await self.publish(task):
+            with (
+                tracing.span(
+                    "source task",
+                    context=Context(),
+                    attributes={"batch.name": batch} if batch else {},
+                ),
+                task_context(task.task_id),
+            ):
+                if self.stop.is_set() or not await self.publish(task, batch):
                     break
             self.stats.next_row = task.row + 1
         log.info(
@@ -127,13 +137,14 @@ class Source:
         )
         return self.stats
 
-    async def publish(self, task: SourceTask) -> bool:
+    async def publish(self, task: SourceTask, batch: str | None = None) -> bool:
         """Публиковать задачу, пока брокер её не подтвердит, False если источник остановлен"""
         try:
             message = TaskMessage(
                 task_id=task.task_id, text=task.text, enqueued_at=datetime.now(UTC)
             )
         except ValidationError as exc:
+            tracing.record_error(exc)
             self.stats.skipped += 1
             log.warning(
                 "invalid row skipped", extra={"row": task.row, "error": exc.errors()[0]["msg"]}
@@ -141,20 +152,16 @@ class Source:
             return True
         while True:
             if self.backoff.delay:
-                await self._pause()
+                with tracing.span(
+                    "source wait", attributes={"backoff.seconds": self.backoff.delay}
+                ):
+                    await self._pause()
             if self.stop.is_set():
                 return False
             # Время приёма ставится при каждой попытке, в очередь задача попадает только сейчас
             message = message.model_copy(update={"enqueued_at": datetime.now(UTC)})
             try:
-                await self.broker.publish(
-                    message,
-                    exchange=TASKS_EXCHANGE,
-                    routing_key=TASKS_ROUTING_KEY,
-                    # Сообщение пишется на диск брокера и переживает его перезапуск
-                    persist=True,
-                    correlation_id=str(task.task_id),
-                )
+                await publish_message(self.broker, message, batch)
             except PublishError:
                 # Сообщение не попало ни в одну очередь, ждём, пока очередь задач объявят
                 self.stats.unavailable += 1
@@ -164,6 +171,9 @@ class Source:
                 # Очередь заполнена, брокер отказал по политике лимита очереди
                 self.stats.rejected += 1
                 self.backoff.on_reject()
+                trace.get_current_span().add_event(
+                    "broker nack", {"backoff.seconds": self.backoff.delay}
+                )
                 log.warning("queue full, source backing off", extra=self._progress())
             except BROKER_ERRORS as exc:
                 self.stats.unavailable += 1
@@ -241,6 +251,7 @@ async def main(argv: Sequence[str] | None = None) -> SourceStats:
     args = parse_args(argv)
     settings = get_settings()
     setup_logging(settings.log_level, "source")
+    tracing.configure("source")
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     # По SIGTERM и Ctrl+C источник прерывает паузу, пишет итог и строку для продолжения
@@ -253,7 +264,7 @@ async def main(argv: Sequence[str] | None = None) -> SourceStats:
         end = None if args.count is None else args.start + args.count
         tasks = islice(read_tasks(args.file, args.column, args.run), args.start, end)
         log.info("source started", extra={"file": str(args.file), "run": args.run})
-        return await Source(broker, settings, stop).run(tasks)
+        return await Source(broker, settings, stop).run(tasks, batch=args.run)
     finally:
         log.info("source stopping")
         await broker.stop()

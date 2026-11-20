@@ -8,7 +8,9 @@ from contextlib import asynccontextmanager
 
 import asyncpg
 from fastapi import FastAPI, Request, Response
+from opentelemetry import trace
 
+from src import tracing
 from src.api import healthz, tasks, v1
 from src.broker import declare_topology, make_broker
 from src.config import Settings, get_app_version, get_settings
@@ -22,6 +24,7 @@ log = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Создать пул БД и подключиться к брокеру до начала обработки запросов"""
+    tracing.configure("api")
     settings: Settings = app.state.settings
     # Пул с min_size 0 не подключается при старте, поэтому приложение поднимется и без БД,
     # а /api/v1/health покажет, что она недоступна
@@ -57,6 +60,29 @@ async def log_requests(
     request: Request, call_next: Callable[[Request], Awaitable[Response]]
 ) -> Response:
     """Выдать запросу request_id и залогировать метод, путь, статус и длительность"""
+    with tracing.span(
+        request.method,
+        kind=trace.SpanKind.SERVER,
+        context=tracing.extract_context(request.headers),
+        attributes={"http.request.method": request.method},
+    ) as span:
+        status = 500
+        try:
+            response = await _log_request(request, call_next)
+            status = response.status_code
+            return response
+        finally:
+            span.set_attribute("http.response.status_code", status)
+            if status >= 500:
+                span.set_status(trace.StatusCode.ERROR)
+            route = getattr(request.scope.get("route"), "path", "unmatched")
+            span.set_attribute("http.route", route)
+            span.update_name(f"{request.method} {route}")
+
+
+async def _log_request(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+) -> Response:
     request_id = uuid.uuid4().hex
     token = request_id_var.set(request_id)
     start = time.perf_counter()

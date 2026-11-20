@@ -5,6 +5,7 @@
 
 import logging
 import re
+import time
 
 import httpx
 from faststream.rabbit import (
@@ -16,8 +17,11 @@ from faststream.rabbit import (
     RabbitQueue,
 )
 from faststream.security import SASLPlaintext
+from opentelemetry.trace import SpanKind
 
+from src import tracing
 from src.config import Settings
+from src.schemas import TaskMessage
 
 TASKS_ROUTING_KEY = "tasks"
 TASKS_EXCHANGE = RabbitExchange("tasks", type=ExchangeType.DIRECT, durable=True)
@@ -33,6 +37,34 @@ TASKS_QUEUE = RabbitQueue(
 )
 DEAD_LETTER_QUEUE = RabbitQueue("tasks.dlq", queue_type=QueueType.CLASSIC, durable=True)
 QUEUE_POLICY_NAME = "tasks-limit"
+
+
+async def publish_message(
+    broker: RabbitBroker, message: TaskMessage, batch: str | None = None
+) -> None:
+    """Передать контекст публикации вместе с задачей и дождаться подтверждения брокера"""
+    with tracing.span(
+        "publish",
+        kind=SpanKind.PRODUCER,
+        attributes={
+            "messaging.system": "rabbitmq",
+            "messaging.destination.name": TASKS_ROUTING_KEY,
+            "task.id": str(message.task_id),
+        },
+    ):
+        headers = {}
+        tracing.propagator.inject(headers)
+        headers["published_at_ns"] = time.time_ns()
+        if batch:
+            headers["batch"] = batch
+        await broker.publish(
+            message,
+            exchange=TASKS_EXCHANGE,
+            routing_key=TASKS_ROUTING_KEY,
+            persist=True,
+            correlation_id=str(message.task_id),
+            headers=headers,
+        )
 
 
 class BrokerLogger(logging.LoggerAdapter):

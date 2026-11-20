@@ -19,7 +19,7 @@ from aiormq.exceptions import (
 )
 from faststream.rabbit import RabbitBroker
 
-from src.broker import TASKS_EXCHANGE, TASKS_QUEUE, TASKS_ROUTING_KEY
+from src.broker import TASKS_QUEUE, publish_message
 from src.config import Settings
 from src.schemas import TaskMessage
 from src.storage import create_pending
@@ -85,13 +85,7 @@ async def estimate_retry_after(broker: RabbitBroker, settings: Settings) -> int:
 async def publish_task(broker: RabbitBroker, message: TaskMessage) -> None:
     """Опубликовать задачу и дождаться подтверждения, отказ брокера отделить от сбоя базы"""
     try:
-        await broker.publish(
-            message,
-            exchange=TASKS_EXCHANGE,
-            routing_key=TASKS_ROUTING_KEY,
-            persist=True,
-            correlation_id=str(message.task_id),
-        )
+        await publish_message(broker, message)
     except PublishError as exc:
         raise BrokerRefusedError("Очередь задач не объявлена") from exc
     except DeliveryError as exc:

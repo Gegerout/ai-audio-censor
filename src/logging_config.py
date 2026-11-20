@@ -12,6 +12,8 @@ from contextvars import ContextVar
 from datetime import UTC, datetime
 from uuid import UUID
 
+from opentelemetry import trace
+
 request_id_var: ContextVar[str] = ContextVar("request_id", default="-")
 task_id_var: ContextVar[str | None] = ContextVar("task_id", default=None)
 
@@ -23,6 +25,8 @@ _DSN_PASSWORD = re.compile(r'(://[^/@\s:"]*:)[^/\s"]+@')
 @contextmanager
 def task_context(task_id: UUID | str | None) -> Iterator[None]:
     """Привязать записи к задаче до выхода из обработчика"""
+    if task_id:
+        trace.get_current_span().set_attribute("task.id", str(task_id))
     token = task_id_var.set(str(task_id) if task_id else None)
     try:
         yield
@@ -51,6 +55,10 @@ class JsonFormatter(logging.Formatter):
         payload.update({k: v for k, v in vars(record).items() if k not in _RECORD_ATTRS})
         if task_id := task_id_var.get():
             payload["task_id"] = task_id
+        context = trace.get_current_span().get_span_context()
+        if context.is_valid:
+            payload["trace_id"] = trace.format_trace_id(context.trace_id)
+            payload["span_id"] = trace.format_span_id(context.span_id)
         if record.exc_info:
             if "task_id" in payload:
                 # В тексте исключения модели или базы может быть строка датасета

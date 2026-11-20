@@ -4,6 +4,16 @@
 include:
   - observability/compose.yaml
 
+x-tracing: &tracing
+  DEPLOYMENT_ENVIRONMENT: ${DEPLOYMENT_ENVIRONMENT:-local}
+  OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-false}
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+  OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-}
+  OTEL_EXPORTER_OTLP_TIMEOUT: ${OTEL_EXPORTER_OTLP_TIMEOUT:-2}
+  OTEL_RESOURCE_ATTRIBUTES: ${OTEL_RESOURCE_ATTRIBUTES:-}
+  OTEL_TRACES_SAMPLER: ${OTEL_TRACES_SAMPLER:-parentbased_always_on}
+  OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-1}
+
 x-logging: &logging
   # Ротация логов, иначе файл логов контейнера растёт без ограничений
   driver: json-file
@@ -165,6 +175,8 @@ services:
     # Healthcheck приложения задан в Dockerfile и работает в любом окружении, не только в compose
     env_file: .env
     environment:
+      <<: *tracing
+      OTEL_SERVICE_NAME: ${OTEL_API_SERVICE_NAME:-api}
       # Внутри сети compose БД и брокер доступны по имени сервиса и стандартному порту
       POSTGRES_HOST: db
       POSTGRES_PORT: "5432"
@@ -196,6 +208,8 @@ services:
     command: ["uvicorn", "src.worker:app", "--host", "0.0.0.0", "--port", "8000"]
     env_file: .env
     environment:
+      <<: *tracing
+      OTEL_SERVICE_NAME: ${OTEL_WORKER_SERVICE_NAME:-worker}
       POSTGRES_HOST: db
       POSTGRES_PORT: "5432"
       RABBITMQ_HOST: rabbitmq
@@ -235,6 +249,8 @@ services:
     entrypoint: ["python", "-m", "src.source"]
     env_file: .env
     environment:
+      <<: *tracing
+      OTEL_SERVICE_NAME: ${OTEL_SOURCE_SERVICE_NAME:-source}
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_PORT: "5672"
     volumes:

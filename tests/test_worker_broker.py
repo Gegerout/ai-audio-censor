@@ -15,8 +15,15 @@ import pandas as pd
 import pytest
 from faststream import TestApp
 from faststream.asgi import AsgiFastStream
+from opentelemetry.trace import StatusCode, format_span_id, format_trace_id
 
-from src.broker import DEAD_LETTER_QUEUE, TASKS_EXCHANGE, TASKS_QUEUE, TASKS_ROUTING_KEY
+from src.broker import (
+    DEAD_LETTER_QUEUE,
+    TASKS_EXCHANGE,
+    TASKS_QUEUE,
+    TASKS_ROUTING_KEY,
+    publish_message,
+)
 from src.config import Settings, get_settings
 from src.logging_config import JsonFormatter
 from src.schemas import TaskMessage, TaskStatus
@@ -132,7 +139,7 @@ async def test_malformed_message_reaches_dead_letter_queue(make_worker, channel)
 
 
 async def test_failing_task_is_redelivered_then_dead_lettered(
-    make_worker, fake_inference, task_pool, channel, caplog
+    make_worker, fake_inference, task_pool, channel, caplog, spans
 ) -> None:
     """Брокер повторно доставляет задачу до лимита, затем она уходит в DLQ и не крутится дальше"""
 
@@ -146,11 +153,28 @@ async def test_failing_task_is_redelivered_then_dead_lettered(
     message = task()
 
     async with TestApp(app):
-        await publish(app, message)
+        await publish_message(app.broker, message)
 
         await wait_until(lambda: _ready_equals(channel, DEAD_LETTER_QUEUE.name, 1))
         await asyncio.sleep(0.3)
 
+    finished = spans.get_finished_spans()
+    (producer,) = [s for s in finished if s.name == "publish"]
+    deliveries = [s for s in finished if s.name == "process"]
+    assert [s.attributes["delivery.attempt"] for s in deliveries] == [1, 2, 3]
+    assert [s.attributes["messaging.rabbitmq.message.redelivered"] for s in deliveries] == [
+        False,
+        True,
+        True,
+    ]
+    assert all(
+        s.parent.span_id == producer.context.span_id and s.status.status_code is StatusCode.ERROR
+        for s in deliveries
+    )
+    assert all(s.context.trace_id == producer.context.trace_id for s in finished)
+    for delivery, outcome in zip(deliveries, ("requeue", "requeue", "dlq"), strict=True):
+        assert {e.name for e in delivery.events} == {"exception", outcome}
+    assert all(message.text not in s.to_json() for s in finished)
     record = await get_task(task_pool, message.task_id)
     assert record.status is TaskStatus.FAILED
     assert record.attempts == 3
@@ -178,7 +202,7 @@ async def _done_count(pool: asyncpg.Pool, expected: int) -> bool:
 
 
 async def test_worker_correlates_concurrent_model_and_broker_logs(
-    make_worker, fake_inference, task_pool, channel, caplog
+    make_worker, fake_inference, task_pool, channel, caplog, spans
 ) -> None:
     """Записи FastStream и потоков модели сохраняют id каждой доставки"""
     messages = [task(), task()]
@@ -195,15 +219,7 @@ async def test_worker_correlates_concurrent_model_and_broker_logs(
     logging.getLogger().addHandler(caplog.handler)
     async with TestApp(app):
         await asyncio.gather(
-            *(
-                app.broker.publish(
-                    message,
-                    exchange=TASKS_EXCHANGE,
-                    routing_key=TASKS_ROUTING_KEY,
-                    correlation_id=str(message.task_id),
-                )
-                for message in messages
-            )
+            *(publish_message(app.broker, message, "test-batch") for message in messages)
         )
         invalid_id = str(uuid4())
         await app.broker.publish(
@@ -221,6 +237,32 @@ async def test_worker_correlates_concurrent_model_and_broker_logs(
     for message in messages:
         names = [e["msg"] for e in events if e.get("task_id") == str(message.task_id)]
         assert names == ["Received", "task received", "predict running", "task done", "Processed"]
+        (process,) = [
+            s
+            for s in spans.get_finished_spans()
+            if s.name == "process" and s.attributes["task.id"] == str(message.task_id)
+        ]
+        trace_id = process.context.trace_id
+        tree = {s.name: s for s in spans.get_finished_spans() if s.context.trace_id == trace_id}
+        assert process.parent.span_id == tree["publish"].context.span_id
+        assert process.attributes["batch.name"] == "test-batch"
+        assert process.attributes["queue.wait.seconds"] >= 0
+        for name in ("inference", "database write"):
+            assert tree[name].parent.span_id == process.context.span_id
+        inference = tree["inference"]
+        assert (inference.attributes["model.alias"], inference.attributes["model.version"]) == (
+            fake_inference.info.alias,
+            fake_inference.info.version,
+        )
+        (entry,) = [
+            e
+            for e in events
+            if e["msg"] == "predict running" and e["task_id"] == str(message.task_id)
+        ]
+        assert (entry["trace_id"], entry["span_id"]) == (
+            format_trace_id(trace_id),
+            format_span_id(inference.context.span_id),
+        )
         assert message.text not in output
     assert any(e["level"] == "ERROR" and e.get("task_id") == invalid_id for e in events)
     assert "private invalid payload" not in output

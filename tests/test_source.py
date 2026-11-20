@@ -119,7 +119,9 @@ def test_backoff_doubles_up_to_cap_and_halves_on_accept() -> None:
     assert shrunk == [0.2, 0.1, 0.05, 0.0]
 
 
-async def test_rejected_task_is_retried_after_growing_pause(settings, monkeypatch, caplog) -> None:
+async def test_rejected_task_is_retried_after_growing_pause(
+    settings, monkeypatch, caplog, spans
+) -> None:
     """После отказа брокера источник ждёт и повторяет ту же задачу, пауза растёт до предела"""
     broker = fake_broker(queue_full(), queue_full(), queue_full(), queue_full(), None)
     caplog.handler.setFormatter(JsonFormatter("source"))
@@ -143,6 +145,12 @@ async def test_rejected_task_is_retried_after_growing_pause(settings, monkeypatc
     backoffs = [e for e in events if e["msg"] == "queue full, source backing off"]
     assert [e["delay_ms"] for e in backoffs] == [1, 2, 4, 4]
     assert all(e["level"] == "WARNING" and e["task_id"] == str(sent[0].task_id) for e in backoffs)
+    finished = spans.get_finished_spans()
+    (root,) = [s for s in finished if s.name == "source task"]
+    waits = [s for s in finished if s.name == "source wait"]
+    assert [s.attributes["backoff.seconds"] for s in waits] == pauses
+    assert [e.name for e in root.events] == ["broker nack"] * 4
+    assert all(s.parent.span_id == root.context.span_id for s in finished if s is not root)
     assert TEXTS[0] not in caplog.text
 
 
