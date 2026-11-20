@@ -1,12 +1,10 @@
 """Трассировка конвейера и экспорт спанов в OTLP по HTTP"""
 
 import os
-import socket
 import traceback
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from functools import lru_cache
-from urllib.parse import urlsplit
 
 from opentelemetry import trace
 from opentelemetry.context import Context
@@ -16,7 +14,7 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor, SpanExportResult
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 from opentelemetry.util.types import Attributes
 
-from src.config import get_telemetry_resource
+from src.config import compose_collector_available, get_telemetry_resource
 
 tracer = trace.get_tracer("ai-audio-censor")
 propagator = TraceContextTextMapPropagator()
@@ -27,12 +25,10 @@ class ComposeSpanExporter(OTLPSpanExporter):
 
     def __init__(self, endpoint: str) -> None:
         super().__init__(endpoint=endpoint)
-        self.host = urlsplit(endpoint).hostname
+        self.endpoint = endpoint
 
     def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
-        try:
-            socket.getaddrinfo(self.host, None, type=socket.SOCK_STREAM)
-        except socket.gaierror:
+        if not compose_collector_available(self.endpoint):
             return SpanExportResult.FAILURE
         return super().export(spans)
 

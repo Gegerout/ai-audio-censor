@@ -7,6 +7,23 @@ x-observer: &observer
       max-size: 5m
       max-file: "2"
 
+x-collector: &collector
+  <<: *observer
+  build:
+    context: .
+    args:
+      BASE_IMAGE: otel/opentelemetry-collector:${OTEL_COLLECTOR_VERSION:-0.140.0}
+  command: [--config=/etc/otelcol/common.yaml, --config=/etc/otelcol/pipeline.yaml]
+  mem_limit: 96m
+  environment:
+    GOMEMLIMIT: 68MiB
+  networks: [backend, default]
+  healthcheck:
+    test: [CMD, /bin/busybox, wget, -qO, /dev/null, 'http://127.0.0.1:13133/']
+    interval: 5s
+    timeout: 3s
+    retries: 12
+
 services:
   loki:
     <<: *observer
@@ -57,25 +74,20 @@ services:
       retries: 12
 
   otel-collector:
-    <<: *observer
-    profiles: [traces, observability]
+    <<: *collector
     image: ${COMPOSE_PROJECT_NAME}-otel-collector:${OTEL_COLLECTOR_VERSION:-0.140.0}
-    build:
-      context: .
-      args:
-        BASE_IMAGE: otel/opentelemetry-collector:${OTEL_COLLECTOR_VERSION:-0.140.0}
-    command: [--config=/etc/otelcol/config.yaml]
-    mem_limit: 96m
-    environment:
-      GOMEMLIMIT: 68MiB
-    networks: [backend, default]
+    profiles: [traces, observability]
     volumes:
-      - ./otel-collector.yaml:/etc/otelcol/config.yaml:ro
-    healthcheck:
-      test: [CMD, /bin/busybox, wget, -qO, /dev/null, 'http://127.0.0.1:13133/']
-      interval: 5s
-      timeout: 3s
-      retries: 12
+      - ./otel-collector.yaml:/etc/otelcol/common.yaml:ro
+      - ./collector-traces.yaml:/etc/otelcol/pipeline.yaml:ro
+
+  metrics-collector:
+    <<: *collector
+    image: ${COMPOSE_PROJECT_NAME}-metrics-collector:${OTEL_COLLECTOR_VERSION:-0.140.0}
+    profiles: [metrics, observability]
+    volumes:
+      - ./otel-collector.yaml:/etc/otelcol/common.yaml:ro
+      - ./collector-metrics.yaml:/etc/otelcol/pipeline.yaml:ro
 
   tempo:
     <<: *observer
@@ -100,10 +112,34 @@ services:
       timeout: 3s
       retries: 18
 
+  prometheus:
+    <<: *observer
+    profiles: [metrics, observability]
+    image: prom/prometheus:${PROMETHEUS_VERSION:-v3.8.0}
+    pull_policy: missing
+    mem_limit: 240m
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-otlp-receiver
+      - --enable-feature=exemplar-storage
+    networks: [backend, default]
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./prometheus.yaml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    healthcheck:
+      test: [CMD, wget, -qO, /dev/null, 'http://127.0.0.1:9090/-/ready']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
 networks:
   backend:
 
 volumes:
+  prometheus-data:
   tempo-data:
   loki-data:
   alloy-data:

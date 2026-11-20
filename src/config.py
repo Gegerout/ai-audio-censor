@@ -1,9 +1,11 @@
 """Настройки приложения из переменных окружения и версия из pyproject.toml"""
 
 import os
+import socket
 import tomllib
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from opentelemetry.sdk.resources import Resource
 from pydantic import Field, SecretStr
@@ -91,3 +93,12 @@ def get_telemetry_resource(service: str) -> Resource:
     return defaults.merge(
         Resource.create({"service.name": os.getenv("OTEL_SERVICE_NAME") or service})
     )
+
+
+def compose_collector_available(endpoint: str) -> bool:
+    """Проверить имя Collector перед фоновым экспортом в сети Compose"""
+    try:
+        socket.getaddrinfo(urlsplit(endpoint).hostname, None, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        return False
+    return True

@@ -16,7 +16,6 @@ processors:
     send_batch_size: 256
 exporters:
   otlphttp:
-    endpoint: http://tempo:4318
     sending_queue:
       queue_size: 64
     retry_on_failure:
@@ -25,8 +24,3 @@ exporters:
       max_elapsed_time: 15s
 service:
   extensions: [health_check]
-  pipelines:
-    traces:
-      receivers: [otlp]
-      processors: [memory_limiter, batch]
-      exporters: [otlphttp]

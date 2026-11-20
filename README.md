@@ -1077,7 +1077,7 @@ curl -fsS -H 'Accept: application/json' "http://127.0.0.1:3200/api/traces/$trace
 
 ## Метрики конвейера
 
-API, источник и воркер отправляют метрики в Collector по OTLP/HTTP. Источник может опубликовать одну строку и завершиться раньше следующего опроса. При штатном выходе периодический reader OpenTelemetry делает последний сбор и отправляет накопленные значения. Для длительного запуска Compose задаёт `OTEL_METRIC_EXPORT_INTERVAL=5000` мс. Адрес для метрик задаётся через `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` (полный URL с `/v1/metrics`) или общий `OTEL_EXPORTER_OTLP_ENDPOINT`. Без адреса метрики выключены. Если Collector недоступен, длительный процесс продолжает считать и передаст накопленные счётчики при следующей успешной отправке. У завершившегося источника последняя точка в этом случае теряется. [OpenTelemetry Metrics SDK](https://opentelemetry.io/docs/specs/otel/metrics/sdk/) · [Финальный сбор Python SDK](https://opentelemetry-python.readthedocs.io/en/latest/_modules/opentelemetry/sdk/metrics/_internal/export.html)
+API, источник и воркер отправляют метрики в Collector по OTLP/HTTP. Источник может опубликовать одну строку и завершиться раньше следующего опроса. При штатном выходе периодический reader OpenTelemetry делает последний сбор и отправляет накопленные значения. Для длительного запуска Compose задаёт `OTEL_METRIC_EXPORT_INTERVAL=5000` мс. В Compose адрес Collector для метрик уже задан. Пока его имя отсутствует в сети, фоновый reader пропускает сбор. Запуск профиля включает отправку у работающих процессов. Для своего Collector задайте `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` (полный URL с `/v1/metrics`) или общий `OTEL_EXPORTER_OTLP_ENDPOINT`. Вне Compose без адреса экспорт выключен. Если Collector недоступен, длительный процесс продолжает считать и передаст накопленные счётчики при следующей успешной отправке. У завершившегося источника последняя точка в этом случае теряется. [OpenTelemetry Metrics SDK](https://opentelemetry.io/docs/specs/otel/metrics/sdk/) · [Финальный сбор Python SDK](https://opentelemetry-python.readthedocs.io/en/latest/_modules/opentelemetry/sdk/metrics/_internal/export.html)
 
 | Имя в Prometheus | Что измеряет |
 | --- | --- |
@@ -1102,6 +1102,42 @@ sum(rate(pipeline_task_duration_seconds_bucket{le="6"}[5m]))
 /
 sum(rate(pipeline_task_duration_seconds_count[5m]))
 ```
+
+### Профиль metrics и очереди RabbitMQ
+
+```bash
+docker compose --profile metrics up -d --build --wait
+curl -fsS http://127.0.0.1:9090/-/ready
+curl -fsSG http://127.0.0.1:9090/api/v1/query \
+  --data-urlencode 'query=up{job=~"rabbitmq|rabbitmq-runtime"}' \
+  | jq -r '.data.result[] | [.metric.job,.value[1]] | @tsv'
+```
+
+После первого опроса оба значения `up` должны быть равны 1. Для стенда выбран Prometheus: он принимает метрики короткого источника по OTLP через Collector, сам опрашивает RabbitMQ и поддерживает нужные запросы PromQL. Брокер из образа `rabbitmq:4.4-management-alpine` поставляется с включённым плагином `rabbitmq_prometheus`. Каждые 5 секунд Prometheus запрашивает показатели двух очередей на `rabbitmq:15692/metrics/detailed`, а на `/metrics` берёт RSS узла. Порт плагина доступен внутри сети Compose. [Метрики RabbitMQ](https://www.rabbitmq.com/docs/prometheus) · [Приём OTLP в Prometheus](https://prometheus.io/docs/guides/opentelemetry/)
+
+Трейсы и метрики принимают два экземпляра Collector с общими настройками памяти и пакетной отправки. Профиль каждого сигнала запускает свой экземпляр. Prometheus хранит ряды 48 часов в томе `prometheus-data`. Веб-интерфейс слушает на `127.0.0.1:9090`, порт меняется через `PROMETHEUS_PORT`. Для гистограмм включено хранение до 10 000 exemplars. При включённых метриках и трейсах поля `trace_id` и `span_id` у примера длительности HTTP-запроса совпадают с серверным спаном в Tempo. Лимит памяти Collector — 96 МиБ, Prometheus — 240 МиБ, всего 336 МиБ для профиля метрик. Во время публикации CSV с двумя воркерами `docker stats --no-stream` показал 20,61 МиБ у Collector и 24,59 МиБ у Prometheus.
+
+| Что проверить | PromQL |
+| --- | --- |
+| Задачи, ожидающие доставки, и сообщения в DLQ | `rabbitmq_detailed_queue_messages_ready{job="rabbitmq"}` |
+| Доставлены воркерам, подтверждение ещё не получено | `rabbitmq_detailed_queue_messages_unacked{queue="tasks"}` |
+| Число подключённых потребителей | `rabbitmq_detailed_queue_consumers{queue="tasks"}` |
+| Байт в сообщениях очереди и память её процесса | `rabbitmq_detailed_queue_messages_bytes{queue="tasks"}` и `rabbitmq_detailed_queue_process_memory_bytes{queue="tasks"}` |
+| RSS источника, воркеров и узла RabbitMQ | `process_memory_usage_bytes{job=~"source\|worker"}` и `rabbitmq_process_resident_memory_bytes` |
+| Скорость каждого воркера, задач/с | `sum by (instance) (rate(pipeline_worker_processed_total{result="ok"}[1m]))` |
+
+Для очередей `tasks` и `tasks.dlq` Prometheus сохраняет по шесть рядов плагина, ещё один ряд содержит RSS узла.
+
+Для повторения эксперимента запустите `make source COUNT=6000 RUN=metrics-$(date +%s)` с одним воркером. Спустя 75 секунд после начала публикации выполните `make worker WORKERS=2` во втором терминале. В Prometheus сравните скорости источника и воркеров за минуту до масштабирования и после полной минуты работы двух воркеров. Для глубины, которая упирается в `x-max-length`, используйте `messages_ready`. Сумма `messages_ready + messages_unacked` включает задачи, которые уже обрабатываются.
+
+На прогоне с лимитом 100 все 6000 разных задач перешли в `done` в Postgres. Максимальная наблюдавшаяся глубина рабочей очереди — 100. Счётчик отказов в Prometheus и итог источника совпали — 1737. В ходе замера был пропуск в сборе около 110 секунд. Для сравнения взяты два минутных окна с 11–12 точками на экземпляр, в каждом число потребителей постоянно.
+
+| Воркеров | Источник, задач/с | Воркеры суммарно, задач/с |
+| ---: | ---: | ---: |
+| 1 | 19,20 | 19,20 |
+| 2 | 35,96 | 37,10 |
+
+Второй воркер увеличил пропускную способность в 1,93 раза. Для отдельной сверки из пяти сообщений потребитель получил два и задержал подтверждение. И `rabbitmqctl list_queues`, и Prometheus показали три готовых сообщения и два неподтверждённых. После отклонения одного некорректного сообщения глубина `tasks.dlq` выросла на единицу.
 
 ## Структура
 

@@ -1,10 +1,11 @@
 """Проверки экспорта метрик, бакетов и меток HTTP"""
 
+import socket
 from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
-from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader, MetricExportResult
 
 from src import metrics
 
@@ -36,6 +37,38 @@ def test_metric_provider_uses_configured_buckets_and_rss(monkeypatch, seconds, e
         assert point.explicit_bounds[3] == expected
         assert point.bucket_counts[3] == point.count == 1
         assert points["process.memory.usage"].value > 0
+    finally:
+        provider.shutdown()
+
+
+def test_compose_reader_exports_accumulated_count_after_profile_starts(monkeypatch) -> None:
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", raising=False)
+    monkeypatch.setenv("COMPOSE_OTLP_METRICS_ENDPOINT", "http://collector:4318/v1/metrics")
+    monkeypatch.setenv("OTEL_SDK_DISABLED", "false")
+    monkeypatch.setenv("OTEL_METRIC_EXPORT_INTERVAL", "60000")
+    providers = []
+    monkeypatch.setattr(metrics.metrics, "set_meter_provider", providers.append)
+    metrics.configure.__wrapped__("source", 0.2)
+    (provider,) = providers
+    send = Mock(return_value=MetricExportResult.SUCCESS)
+    monkeypatch.setattr(metrics.OTLPMetricExporter, "export", send)
+    lookup = Mock(side_effect=socket.gaierror())
+    monkeypatch.setattr(socket, "getaddrinfo", lookup)
+    try:
+        counter = provider.get_meter(metrics.SCOPE).create_counter("published")
+        counter.add(1)
+        provider.force_flush()
+        send.assert_not_called()
+        lookup.side_effect = None
+        counter.add(2)
+        provider.force_flush()
+        (data,) = send.call_args.args
+        (resource,) = data.resource_metrics
+        (scope,) = resource.scope_metrics
+        (published,) = [m for m in scope.metrics if m.name == "published"]
+        assert published.data.data_points[0].value == 3
+        lookup.assert_called_with("collector", None, type=socket.SOCK_STREAM)
     finally:
         provider.shutdown()
 
