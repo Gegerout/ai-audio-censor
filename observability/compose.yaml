@@ -135,10 +135,40 @@ services:
       timeout: 3s
       retries: 12
 
+  grafana:
+    <<: *observer
+    profiles: [observability]
+    image: grafana/grafana:${GRAFANA_VERSION:-12.3.1}
+    pull_policy: missing
+    mem_limit: 384m
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-}
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+    entrypoint:
+      - sh
+      - -ec
+      - |
+        : "$${GF_SECURITY_ADMIN_PASSWORD:?задайте GRAFANA_PASSWORD в .env}"
+        exec /run.sh "$$@"
+      - --
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+    healthcheck:
+      test: [CMD, wget, -qO, /dev/null, 'http://127.0.0.1:3000/api/health']
+      interval: 5s
+      timeout: 3s
+      retries: 18
+
 networks:
   backend:
 
 volumes:
+  grafana-data:
   prometheus-data:
   tempo-data:
   loki-data:

@@ -1139,6 +1139,26 @@ curl -fsSG http://127.0.0.1:9090/api/v1/query \
 
 Второй воркер увеличил пропускную способность в 1,93 раза. Для отдельной сверки из пяти сообщений потребитель получил два и задержал подтверждение. И `rabbitmqctl list_queues`, и Prometheus показали три готовых сообщения и два неподтверждённых. После отклонения одного некорректного сообщения глубина `tasks.dlq` выросла на единицу.
 
+## Grafana
+
+Grafana входит в профиль `observability`. Задайте `GRAFANA_PASSWORD` в локальном `.env` перед первым запуском. На пустом томе Grafana создаёт пользователя `admin` с этим паролем. Учётная запись сохраняется в `grafana-data`. При повторном запуске с тем же томом используется сохранённый пароль.
+
+```bash
+docker compose --profile observability up -d --build --wait
+curl -fsS http://127.0.0.1:3000/api/health | jq -r .database
+```
+
+Проверка должна вернуть `ok`. Войдите как `admin` по адресу `http://127.0.0.1:3000`. Порт меняется через `GRAFANA_PORT`. Grafana при старте читает файл `observability/grafana/provisioning/datasources/pipeline.yaml`. В **Connections → Data sources** появляются Prometheus, Loki и Tempo. Их постоянные UID используются в ссылках между сигналами.
+
+### Найти задачу и перейти между сигналами
+
+1. Возьмите `task_id` из БД или ответа `POST /api/v1/tasks`. В **Explore** выберите **Loki**, интервал, в котором выполнялась задача, и запрос `{service=~"api|source|worker"} |= "TASK_ID"`. Подставьте идентификатор вместо `TASK_ID`.
+2. Раскройте запись `task done` воркера и нажмите **Открыть трейс**. Grafana извлечёт `trace_id` из JSON и откроет задачу в Tempo. В спане `process` атрибут `queue.wait.seconds` показывает ожидание в очереди, а длительность дочернего спана `inference` — время работы модели.
+3. Раскройте `inference` и нажмите **Logs for this span**. Loki покажет записи с тем же `trace_id` от всех участников обработки. Окно начинается за пять минут до спана и заканчивается через пять минут после него. Если задача дольше ждала в очереди, расширьте интервал в Explore.
+4. В **Explore → Prometheus** выполните запрос `pipeline_api_duration_seconds_bucket{route="/api/v1/tasks"}`. В параметрах запроса включите **Exemplars**. Нажмите маркер измерения на графике и **Query with Tempo**. Откроется трейс с выбранным спаном HTTP-запроса.
+
+Связь проверена в браузере на одном запросе от API до Postgres. При отправке 1200 строк CSV снимок `docker stats --no-stream` показал **549,13 МиБ** суммарно у семи сервисов наблюдаемости, из них **290,4 МиБ** у Grafana. Сумма лимитов этих сервисов — **1456 МиБ**, в том числе **384 МиБ** у Grafana. [Настройка переходов между Tempo и Loki](https://grafana.com/docs/grafana/latest/datasources/tempo/configure-tempo-data-source/configure-trace-to-logs/) · [Настройка Prometheus в Grafana](https://grafana.com/docs/grafana/latest/datasources/prometheus/configure/)
+
 ## Структура
 
 ```
