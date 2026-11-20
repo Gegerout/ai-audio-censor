@@ -1,6 +1,9 @@
 # Локальный стенд, приложение, воркер, RabbitMQ, MLflow и базы в одной сети
 # Логины, пароли и имена баз берутся из .env, секретов в этом файле нет
 
+include:
+  - observability/compose.yaml
+
 x-logging: &logging
   # Ротация логов, иначе файл логов контейнера растёт без ограничений
   driver: json-file
@@ -249,7 +252,15 @@ services:
         limits:
           cpus: "0.5"
           memory: 256M
-    logging: *logging
+    logging:
+      driver: syslog
+      options:
+        syslog-address: "udp://127.0.0.1:${SOURCE_SYSLOG_PORT:-15140}"
+        syslog-format: rfc5424micro
+        tag: '{{index .ContainerLabels "com.docker.compose.project"}}/{{index .ContainerLabels "com.docker.compose.service"}}'
+        mode: non-blocking
+        cache-max-size: 10m
+        cache-max-file: "3"
     restart: "no"
 
 networks:

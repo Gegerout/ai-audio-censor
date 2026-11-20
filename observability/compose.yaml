@@ -1,0 +1,60 @@
+x-logs: &logs
+  profiles: [logs, observability]
+  pull_policy: build
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: 5m
+      max-file: "2"
+
+services:
+  loki:
+    <<: *logs
+    image: ${COMPOSE_PROJECT_NAME}-loki:${LOKI_VERSION:-3.6.3}
+    build:
+      context: .
+      args:
+        BASE_IMAGE: grafana/loki:${LOKI_VERSION:-3.6.3}
+    command: [-config.file=/etc/loki/config.yaml]
+    mem_limit: 256m
+    environment:
+      GOMEMLIMIT: 192MiB
+    ports:
+      - "127.0.0.1:${LOKI_PORT:-3100}:3100"
+    volumes:
+      - ./loki.yaml:/etc/loki/config.yaml:ro
+      - loki-data:/loki
+    healthcheck:
+      test: [CMD, /bin/busybox, wget, -qO, /dev/null, 'http://127.0.0.1:3100/ready']
+      interval: 5s
+      timeout: 3s
+      retries: 18
+
+  alloy:
+    <<: *logs
+    image: ${COMPOSE_PROJECT_NAME}-alloy:${ALLOY_VERSION:-v1.11.2}
+    build:
+      context: .
+      args:
+        BASE_IMAGE: grafana/alloy:${ALLOY_VERSION:-v1.11.2}
+    command: [run, --disable-reporting, --storage.path=/var/lib/alloy, /etc/alloy/config.alloy]
+    mem_limit: 144m
+    environment:
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME}
+      GOMEMLIMIT: 96MiB
+    ports:
+      - "127.0.0.1:${SOURCE_SYSLOG_PORT:-15140}:15140/udp"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./log-agent/config.alloy:/etc/alloy/config.alloy:ro
+      - alloy-data:/var/lib/alloy
+    healthcheck:
+      test: [CMD, /bin/busybox, wget, -qO, /dev/null, 'http://127.0.0.1:12345/-/ready']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+volumes:
+  loki-data:
+  alloy-data:

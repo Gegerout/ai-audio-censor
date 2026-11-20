@@ -37,7 +37,7 @@ up:
 
 # Остановить стенд, данные Postgres в volume сохраняются
 down:
-	docker compose down
+	docker compose --profile '*' down
 
 # Логи приложения в реальном времени
 logs:

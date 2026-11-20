@@ -979,6 +979,45 @@ API, источник и воркер используют стандартны�
 {"ts":"2026-11-20T07:00:00+00:00","level":"INFO","logger":"src.worker","service":"worker","env":"local","request_id":"-","msg":"task done","attempts":1,"spans":0,"task_id":"2cd6587b-67c3-4822-b457-b88e59a9f7dd"}
 ```
 
+### Сбор и поиск в Loki
+
+Для запуска нужен Docker Compose 2.20.3 или новее. Обычный `docker compose up -d` поднимает конвейер. Профиль `logs` добавляет Grafana Alloy и Loki. Ключи и облачный аккаунт для них не требуются.
+
+```bash
+docker compose --profile logs up -d --build --wait
+curl -fsS http://127.0.0.1:3100/ready
+```
+
+Alloy читает stdout API и воркеров через Docker socket, смонтированный с `:ro`. Отбор идёт по меткам `com.docker.compose.project` и `com.docker.compose.service`. Источник иногда успевает завершиться и удалиться между двумя опросами Docker. Поэтому для него Docker отправляет stdout в Alloy сразу через локальный syslog. Тег берётся из тех же двух меток, чужие проекты отбрасываются. Драйвер работает в неблокирующем режиме. Если агент выключен, источник продолжает обработку и выводит JSON в терминал. У UDP нет подтверждения доставки, поэтому для истории короткого запуска включите профиль до отправки пачки. [Обнаружение контейнеров](https://grafana.com/docs/alloy/latest/reference/components/discovery/discovery.docker/) · [Драйвер syslog](https://docs.docker.com/engine/logging/drivers/syslog/)
+
+Loki индексирует метки, а строки JSON хранит в чанках. Метки потока — `service`, `level` и `env`. Для трёх сервисов, пяти уровней Python и одного окружения получается до 15 потоков. Если добавить в метки `task_id` или `trace_id`, число потоков будет расти с каждой задачей. Идентификаторы остаются в JSON и доступны в запросах. На локальном стенде Loki использует файловое хранилище и один именованный том. Compactor удаляет данные старше 48 часов. Для Loki задан лимит 256 МиБ, для Alloy — 144 МиБ. HTTP API Loki и UDP-порт агента опубликованы на loopback. Порты меняются через `LOKI_PORT` и `SOURCE_SYSLOG_PORT` в `.env`. [Хранение в Loki](https://grafana.com/docs/loki/latest/configure/storage/) · [Срок хранения](https://grafana.com/docs/loki/latest/operations/storage/retention/)
+
+При отправке 300 строк через `make source COUNT=300` снимок `docker stats --no-stream` во время публикации показал 48,88 МиБ у Alloy и 98,29 МиБ у Loki. В Loki нашлись события публикации и завершения для всех 300 идентификаторов.
+
+Создать задачу и получить её историю за последние 15 минут можно через HTTP API Loki. Вторую команду выполняйте после того, как воркер обработал задачу и агент отправил записи.
+
+```bash
+task_id=$(curl -fsS -H 'Content-Type: application/json' -d '{"text":"hello"}' \
+  http://127.0.0.1:8000/api/v1/tasks | jq -r .task_id)
+
+curl -fsSG http://127.0.0.1:3100/loki/api/v1/query_range \
+  --data-urlencode "query={service=~\"api|source|worker\"} |= \"$task_id\" | json | task_id=\"$task_id\"" \
+  --data-urlencode 'since=15m' --data-urlencode 'direction=forward' \
+  | jq -r '[.data.result[].values[]] | sort_by(.[0])[] | (.[1] | fromjson) | [.ts,.service,.msg] | @tsv'
+```
+
+Для короткой пакетной отправки подойдёт `make source RUN=logs-check COUNT=1`. В выводе `task published` есть `task_id` для того же запроса. Другие события ищутся заменой параметра `query` с тем же интервалом `since=15m`.
+
+| Что найти | Запрос LogQL |
+| --- | --- |
+| Все ошибки | `{level=~"ERROR\|CRITICAL"}` |
+| Отказ API и время до повтора | `{service="api",level="WARNING"} \| json \| msg="task rejected" \| status=503` |
+| Переполнение и пауза источника | `{service="source",level="WARNING"} \|= "queue full, source backing off"` |
+| Перевод в DLQ | `{service="worker",level="ERROR"} \|= "dead letter queue"` |
+| Начало и конец остановки | `{level="INFO"} \| json \| msg=~"(application\|source\|worker) stopp(ing\|ed)"` |
+
+`make down` останавливает также сервисы профиля. Данные Loki и позиции чтения Alloy сохраняются в именованных томах.
+
 ## Структура
 
 ```
