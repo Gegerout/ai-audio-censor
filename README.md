@@ -6,6 +6,8 @@
 
 **Стек.** Python 3.11, FastAPI, uvicorn, FastStream, RabbitMQ, asyncpg, pydantic-settings. Окружение и зависимости через uv, линтер и форматтер ruff, тесты pytest с coverage, pre-commit, Docker и docker compose, GitHub Actions, образы в GHCR.
 
+[Лабораторная работа 4. Проверка наблюдаемости на живом стенде](docs/observability.md)
+
 ## Эндпоинты
 
 | Метод и путь | Что делает | Коды ответа |
@@ -47,10 +49,10 @@ curl localhost:8000/api/v1/health
 `make eda`, `make train` и `make register`. Реестр и результаты сохраняются в Docker
 volumes и переживают `make down`.
 
-Готовый образ можно скачать из реестра без сборки.
+Стенд лабораторной собирается из текущей ветки. Для уже опубликованного релиза образ можно скачать по номеру версии при наличии доступа к пакету GHCR.
 
 ```bash
-docker pull ghcr.io/gegerout/ai-audio-censor:latest
+docker pull ghcr.io/gegerout/ai-audio-censor:0.1.0
 ```
 
 ## MLflow
@@ -1114,7 +1116,7 @@ curl -fsSG http://127.0.0.1:9090/api/v1/query \
   | jq -r '.data.result[] | [.metric.job,.value[1]] | @tsv'
 ```
 
-После первого опроса оба значения `up` должны быть равны 1. Для стенда выбран Prometheus: он принимает метрики короткого источника по OTLP через Collector, сам опрашивает RabbitMQ и поддерживает нужные запросы PromQL. Брокер из образа `rabbitmq:4.4-management-alpine` поставляется с включённым плагином `rabbitmq_prometheus`. Каждые 5 секунд Prometheus запрашивает показатели двух очередей на `rabbitmq:15692/metrics/detailed`, а на `/metrics` берёт RSS узла. Порт плагина доступен внутри сети Compose. [Метрики RabbitMQ](https://www.rabbitmq.com/docs/prometheus) · [Приём OTLP в Prometheus](https://prometheus.io/docs/guides/opentelemetry/)
+После первого опроса оба значения `up` должны быть равны 1. Для стенда выбран Prometheus: он принимает метрики короткого источника по OTLP через Collector, сам опрашивает RabbitMQ и поддерживает нужные запросы PromQL. Брокер из образа `rabbitmq:4.4.0-management-alpine` поставляется с включённым плагином `rabbitmq_prometheus`. Каждые 5 секунд Prometheus запрашивает показатели двух очередей на `rabbitmq:15692/metrics/detailed`, а на `/metrics` берёт RSS узла. Порт плагина доступен внутри сети Compose. [Метрики RabbitMQ](https://www.rabbitmq.com/docs/prometheus) · [Приём OTLP в Prometheus](https://prometheus.io/docs/guides/opentelemetry/)
 
 Трейсы и метрики принимают два экземпляра Collector с общими настройками памяти и пакетной отправки. Профиль каждого сигнала запускает свой экземпляр. Prometheus хранит ряды 48 часов в томе `prometheus-data`. Веб-интерфейс слушает на `127.0.0.1:9090`, порт меняется через `PROMETHEUS_PORT`. Для гистограмм включено хранение до 10 000 exemplars. При включённых метриках и трейсах поля `trace_id` и `span_id` у примера длительности HTTP-запроса совпадают с серверным спаном в Tempo. Лимит памяти Collector — 96 МиБ, Prometheus — 240 МиБ, всего 336 МиБ для профиля метрик. Во время публикации CSV с двумя воркерами `docker stats --no-stream` показал 20,61 МиБ у Collector и 24,59 МиБ у Prometheus.
 
@@ -1175,6 +1177,17 @@ curl -fsS http://127.0.0.1:3000/api/health | jq -r .database
 4. В **Explore → Prometheus** выполните запрос `pipeline_api_duration_seconds_bucket{route="/api/v1/tasks"}`. В параметрах запроса включите **Exemplars**. Нажмите маркер измерения на графике и **Query with Tempo**. Откроется трейс с выбранным спаном HTTP-запроса.
 
 Связь проверена в браузере на одном запросе от API до Postgres. При отправке 1200 строк CSV снимок `docker stats --no-stream` показал **549,13 МиБ** суммарно у семи сервисов наблюдаемости, из них **290,4 МиБ** у Grafana. Сумма лимитов этих сервисов — **1456 МиБ**, в том числе **384 МиБ** у Grafana. [Настройка переходов между Tempo и Loki](https://grafana.com/docs/grafana/latest/datasources/tempo/configure-tempo-data-source/configure-trace-to-logs/) · [Настройка Prometheus в Grafana](https://grafana.com/docs/grafana/latest/datasources/prometheus/configure/)
+
+### Алерты
+
+Grafana загружает два правила из `observability/grafana/provisioning/alerting/pipeline.yaml`. В **Alerting → Alert rules → AI Audio Censor → pipeline** видны состояние, последнее вычисление и переход на панель дашборда. Интервал проверки — 10 секунд. История состояний хранится двое суток. Для папки AI Audio Censor включено круглосуточное отключение внешних уведомлений. Состояния видны в Grafana без настройки почты. [Настройка правил из файлов](https://grafana.com/docs/grafana/latest/alerting/set-up/provision-alerting-resources/file-provisioning/)
+
+| Правило | Когда срабатывает | Когда возвращается в Normal |
+| --- | --- | --- |
+| Очередь задач заполнена более чем на 90% | `messages_ready / действующий лимит > 0.9` непрерывно в течение минуты. Оставшиеся 10% дают время подключить воркер, минута отсеивает краткие пики. | При заполнении до 90% включительно. Если политику сняли и ограничения нет, заполнение для правила равно нулю. |
+| В очереди ошибок появились сообщения | В `tasks.dlq` хотя бы одно готовое сообщение на двух последовательных проверках (`for: 10s`). Каждая окончательно отклонённая задача требует разбора. Задержка отсеивает сообщение, которое уже успели разобрать между проверками. | После разбора последнего сообщения. Пока оно в DLQ, правило остаётся активным, даже если новых ошибок уже нет. |
+
+Отсутствие необходимых метрик даёт состояние **No Data**, а ошибка выполнения запроса — **Error**. На стенде оба правила прошли через **Pending** и **Firing**. При девяти готовых сообщениях и лимите десять правило очереди оставалось в **Normal** больше минуты. После десятого сообщения и минуты ожидания оно перешло в **Firing**. После снятия лимита правило очереди вернулось в **Normal** даже с оставшимися сообщениями. Правило DLQ вернулось в **Normal** после чтения и подтверждения тестового сообщения.
 
 ## Структура
 
