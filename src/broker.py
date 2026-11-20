@@ -35,12 +35,29 @@ DEAD_LETTER_QUEUE = RabbitQueue("tasks.dlq", queue_type=QueueType.CLASSIC, durab
 QUEUE_POLICY_NAME = "tasks-limit"
 
 
+class BrokerLogger(logging.LoggerAdapter):
+    """Добавить correlation_id в записи FastStream о получении и подтверждении сообщения"""
+
+    def process(self, msg: str, kwargs: dict) -> tuple[str, dict]:
+        message = self.extra["current_message"]()
+        if message is not None:
+            fields = kwargs.get("extra") or {}
+            kwargs["extra"] = {**fields, "task_id": message.correlation_id}
+            if kwargs.get("exc_info"):
+                msg = (
+                    "unhandled task error, rejecting to dead letter queue"
+                    if "queue" in fields
+                    else "broker acknowledgement failed"
+                )
+        return msg, kwargs
+
+
 def make_broker(settings: Settings, graceful_timeout: float | None = None) -> RabbitBroker:
     """Создать брокер, логин и пароль передаются отдельно, поэтому спецсимволы не ломают адрес
 
     graceful_timeout задаёт, сколько при остановке ждать обработчики, которые уже работают
     """
-    return RabbitBroker(
+    broker = RabbitBroker(
         host=settings.rabbitmq_host,
         port=settings.rabbitmq_port,
         security=SASLPlaintext(
@@ -52,10 +69,14 @@ def make_broker(settings: Settings, graceful_timeout: float | None = None) -> Ra
         # вызывает ошибку, а не теряется молча
         default_channel=Channel(publisher_confirms=True, on_return_raises=True),
         # Логи FastStream идут в общий JSON формат, а не в его собственный цветной вывод
-        logger=logging.getLogger(__name__),
+        logger=BrokerLogger(
+            logging.getLogger(__name__),
+            {"current_message": lambda: broker.context.get_local("message")},
+        ),
         # Запись о каждом сообщении видна только на уровне DEBUG, итог задачи пишет сам компонент
         log_level=logging.DEBUG,
     )
+    return broker
 
 
 def queue_policy(settings: Settings) -> dict:

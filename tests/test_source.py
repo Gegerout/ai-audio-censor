@@ -2,6 +2,7 @@
 
 import asyncio
 import csv
+import json
 import logging
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock
@@ -20,6 +21,7 @@ from pamqp.commands import Basic
 from src import source
 from src.broker import TASKS_EXCHANGE, TASKS_QUEUE
 from src.config import get_settings
+from src.logging_config import JsonFormatter
 from src.schemas import TaskMessage
 from src.source import TASK_NAMESPACE, Backoff, Source, SourceTask, main, read_tasks
 
@@ -117,9 +119,10 @@ def test_backoff_doubles_up_to_cap_and_halves_on_accept() -> None:
     assert shrunk == [0.2, 0.1, 0.05, 0.0]
 
 
-async def test_rejected_task_is_retried_after_growing_pause(settings, monkeypatch) -> None:
+async def test_rejected_task_is_retried_after_growing_pause(settings, monkeypatch, caplog) -> None:
     """После отказа брокера источник ждёт и повторяет ту же задачу, пауза растёт до предела"""
     broker = fake_broker(queue_full(), queue_full(), queue_full(), queue_full(), None)
+    caplog.handler.setFormatter(JsonFormatter("source"))
     pauses = []
     worker = Source(broker, settings)
     original = worker._pause
@@ -136,6 +139,11 @@ async def test_rejected_task_is_retried_after_growing_pause(settings, monkeypatc
     sent = [call.args[0] for call in broker.publish.await_args_list]
     assert {message.task_id for message in sent} == {tasks(TEXTS[0])[0].task_id}
     assert all(call.kwargs["persist"] for call in broker.publish.await_args_list)
+    events = [json.loads(line) for line in caplog.text.splitlines()]
+    backoffs = [e for e in events if e["msg"] == "queue full, source backing off"]
+    assert [e["delay_ms"] for e in backoffs] == [1, 2, 4, 4]
+    assert all(e["level"] == "WARNING" and e["task_id"] == str(sent[0].task_id) for e in backoffs)
+    assert TEXTS[0] not in caplog.text
 
 
 async def test_source_does_not_read_ahead_while_rejected(settings) -> None:
@@ -209,7 +217,7 @@ async def test_stop_interrupts_pause(settings, caplog) -> None:
 
     assert (stats.published, stats.next_row) == (0, 0)
     assert broker.publish.await_count == 1
-    assert "source stopped" in caplog.messages
+    assert "source publishing interrupted" in caplog.messages
 
 
 async def test_progress_report_contains_rate(settings, caplog) -> None:

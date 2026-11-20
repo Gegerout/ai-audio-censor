@@ -32,7 +32,7 @@ from pydantic import ValidationError
 
 from src.broker import TASKS_EXCHANGE, TASKS_ROUTING_KEY, declare_topology, make_broker
 from src.config import Settings, get_settings
-from src.logging_config import setup_logging
+from src.logging_config import setup_logging, task_context
 from src.schemas import TaskMessage
 
 # Имя задано явно, при запуске через python -m модуль называется __main__
@@ -117,11 +117,13 @@ class Source:
         """Опубликовать задачи по очереди, следующая строка читается после подтверждения"""
         for task in tasks:
             self.stats.next_row = task.row
-            if self.stop.is_set() or not await self.publish(task):
-                break
+            with task_context(task.task_id):
+                if self.stop.is_set() or not await self.publish(task):
+                    break
             self.stats.next_row = task.row + 1
         log.info(
-            "source stopped" if self.stop.is_set() else "source finished", extra=self._summary()
+            "source publishing interrupted" if self.stop.is_set() else "source finished",
+            extra=self._summary(),
         )
         return self.stats
 
@@ -151,6 +153,7 @@ class Source:
                     routing_key=TASKS_ROUTING_KEY,
                     # Сообщение пишется на диск брокера и переживает его перезапуск
                     persist=True,
+                    correlation_id=str(task.task_id),
                 )
             except PublishError:
                 # Сообщение не попало ни в одну очередь, ждём, пока очередь задач объявят
@@ -161,11 +164,16 @@ class Source:
                 # Очередь заполнена, брокер отказал по политике лимита очереди
                 self.stats.rejected += 1
                 self.backoff.on_reject()
+                log.warning("queue full, source backing off", extra=self._progress())
             except BROKER_ERRORS as exc:
                 self.stats.unavailable += 1
                 self.backoff.on_reject()
-                log.warning("broker unavailable, retrying", extra={"error": repr(exc)})
+                log.warning(
+                    "broker unavailable, retrying",
+                    extra={"error": type(exc).__name__, **self._progress()},
+                )
             else:
+                log.info("task published", extra={"row": task.row})
                 self.stats.published += 1
                 self.backoff.on_accept()
                 self._maybe_report()
@@ -232,25 +240,31 @@ async def main(argv: Sequence[str] | None = None) -> SourceStats:
     """Подключиться к брокеру и отправить строки файла"""
     args = parse_args(argv)
     settings = get_settings()
-    setup_logging(settings.log_level)
+    setup_logging(settings.log_level, "source")
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     # По SIGTERM и Ctrl+C источник прерывает паузу, пишет итог и строку для продолжения
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop.set)
     broker = make_broker(settings)
-    await broker.connect()
     try:
+        await broker.connect()
         await declare_topology(broker)
         end = None if args.count is None else args.start + args.count
         tasks = islice(read_tasks(args.file, args.column, args.run), args.start, end)
         log.info("source started", extra={"file": str(args.file), "run": args.run})
         return await Source(broker, settings, stop).run(tasks)
     finally:
+        log.info("source stopping")
         await broker.stop()
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.remove_signal_handler(sig)
+        log.info("source stopped")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except Exception:
+        log.exception("source failed")
+        raise SystemExit(1) from None

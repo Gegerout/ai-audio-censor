@@ -86,7 +86,11 @@ async def publish_task(broker: RabbitBroker, message: TaskMessage) -> None:
     """Опубликовать задачу и дождаться подтверждения, отказ брокера отделить от сбоя базы"""
     try:
         await broker.publish(
-            message, exchange=TASKS_EXCHANGE, routing_key=TASKS_ROUTING_KEY, persist=True
+            message,
+            exchange=TASKS_EXCHANGE,
+            routing_key=TASKS_ROUTING_KEY,
+            persist=True,
+            correlation_id=str(message.task_id),
         )
     except PublishError as exc:
         raise BrokerRefusedError("Очередь задач не объявлена") from exc
@@ -97,10 +101,15 @@ async def publish_task(broker: RabbitBroker, message: TaskMessage) -> None:
 
 
 async def submit_task(
-    pool: asyncpg.Pool, broker: RabbitBroker, settings: Settings, text: str
+    pool: asyncpg.Pool,
+    broker: RabbitBroker,
+    settings: Settings,
+    text: str,
+    *,
+    task_id: UUID | None = None,
 ) -> UUID:
     """Записать задачу и опубликовать её, при отказе брокера запись откатывается"""
-    task_id = uuid4()
+    task_id = task_id or uuid4()
     enqueued_at = datetime.now(UTC)
     message = TaskMessage(task_id=task_id, text=text, enqueued_at=enqueued_at)
     cap = settings.tasks_retry_after_max_seconds

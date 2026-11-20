@@ -69,7 +69,7 @@ async def test_source_slows_to_consumer_speed_without_losing_tasks(
     async def slow_consumer(message: aio_pika.abc.AbstractIncomingMessage) -> None:
         await asyncio.sleep(CONSUMER_SECONDS)
         task = TaskMessage.model_validate_json(message.body)
-        received.append((task.task_id, message.delivery_mode))
+        received.append((task.task_id, message.delivery_mode, message.correlation_id))
         await message.ack()
 
     await (await channel.get_queue(TASKS_QUEUE.name)).consume(slow_consumer)
@@ -96,8 +96,9 @@ async def test_source_slows_to_consumer_speed_without_losing_tasks(
     assert stats.rejected > 0
     assert max(depths) == LIMIT
     # Каждая задача пришла ровно один раз и в том порядке, в каком строки идут в файле
-    assert [task_id for task_id, _ in received] == [task.task_id for task in sent]
-    assert {mode for _, mode in received} == {aio_pika.DeliveryMode.PERSISTENT}
+    assert [task_id for task_id, _, _ in received] == [task.task_id for task in sent]
+    assert {mode for _, mode, _ in received} == {aio_pika.DeliveryMode.PERSISTENT}
+    assert all(str(task_id) == correlation_id for task_id, _, correlation_id in received)
     # Источник не мог закончить раньше, чем потребитель освободил место под последние задачи
     assert elapsed >= (COUNT - LIMIT - 1) * CONSUMER_SECONDS * 0.9
 

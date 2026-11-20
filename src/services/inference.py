@@ -1,14 +1,17 @@
 """Загрузка модели из реестра и обработка текстов"""
 
+import os
 from dataclasses import dataclass
 from numbers import Integral
+from typing import TYPE_CHECKING
 
-import mlflow
 import pandas as pd
-from mlflow.pyfunc import PyFuncModel
 
 from src.config import Settings
 from src.schemas import ModelInfo, ProcessResponse, TextSpan
+
+if TYPE_CHECKING:
+    from mlflow.pyfunc import PyFuncModel
 
 
 def positions_to_spans(text: str, positions: list[int]) -> list[TextSpan]:
@@ -32,7 +35,7 @@ def positions_to_spans(text: str, positions: list[int]) -> list[TextSpan]:
 class InferenceService:
     """Модель и сведения о версии, сохранённые на весь срок работы процесса"""
 
-    model: PyFuncModel
+    model: "PyFuncModel"
     info: ModelInfo
 
     def process(self, text: str) -> ProcessResponse:
@@ -46,6 +49,10 @@ class InferenceService:
 
 def load_inference(settings: Settings) -> InferenceService:
     """Разрешить alias один раз и загрузить соответствующую версию модели"""
+    os.environ["MLFLOW_CONFIGURE_LOGGING"] = "false"
+    os.environ["MLFLOW_ENABLE_ARTIFACTS_PROGRESS_BAR"] = "false"
+    import mlflow
+
     mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
     mlflow.set_registry_uri(settings.mlflow_tracking_uri)
     client = mlflow.MlflowClient()

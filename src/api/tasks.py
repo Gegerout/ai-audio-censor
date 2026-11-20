@@ -2,10 +2,11 @@
 
 import asyncio
 import logging
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
 
+from src.logging_config import task_context
 from src.schemas import ErrorResponse, TaskAccepted, TaskRequest, TaskResponse, TaskStatus
 from src.services.tasks import STORAGE_ERRORS, TaskRejectedError, submit_task
 from src.storage import get_task
@@ -28,16 +29,23 @@ UNAVAILABLE = {
 async def create_task(body: TaskRequest, request: Request, response: Response) -> TaskAccepted:
     """Поставить текст в очередь, при заполненной очереди сразу ответить 503"""
     state = request.app.state
-    try:
-        task_id = await submit_task(state.db_pool, state.broker, state.settings, body.text)
-    except TaskRejectedError as exc:
-        log.warning("task rejected", extra={"reason": exc.reason, "retry_after": exc.retry_after})
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=exc.reason,
-            headers={"Retry-After": str(exc.retry_after)},
-        ) from exc
-    log.info("task accepted", extra={"task_id": str(task_id)})
+    task_id = request.state.task_id = uuid4()
+    with task_context(task_id):
+        try:
+            await submit_task(
+                state.db_pool, state.broker, state.settings, body.text, task_id=task_id
+            )
+        except TaskRejectedError as exc:
+            log.warning(
+                "task rejected",
+                extra={"status": 503, "reason": exc.reason, "retry_after": exc.retry_after},
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=exc.reason,
+                headers={"Retry-After": str(exc.retry_after)},
+            ) from exc
+        log.info("task accepted")
     response.headers["Location"] = f"{router.prefix}/{task_id}"
     return TaskAccepted(task_id=task_id, status=TaskStatus.PENDING)
 

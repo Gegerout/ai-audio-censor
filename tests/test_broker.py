@@ -2,6 +2,7 @@
 
 import base64
 import json
+import logging
 from unittest.mock import AsyncMock, Mock
 
 import httpx
@@ -14,6 +15,7 @@ from src.broker import (
     DEAD_LETTER_QUEUE,
     TASKS_EXCHANGE,
     TASKS_QUEUE,
+    BrokerLogger,
     apply_queue_policy,
     declare_topology,
     make_broker,
@@ -142,3 +144,21 @@ def test_main_runs_setup_with_settings(monkeypatch) -> None:
     broker_setup.main()
 
     setup.assert_awaited_once_with(get_settings())
+
+
+@pytest.mark.parametrize(
+    ("fields", "event"),
+    [
+        ({"queue": "tasks"}, "unhandled task error, rejecting to dead letter queue"),
+        ({}, "broker acknowledgement failed"),
+    ],
+)
+def test_broker_errors_keep_correlation_and_hide_exception_text(fields, event) -> None:
+    """Ошибки обработки и подтверждения различимы без содержимого сообщения"""
+    message = Mock(correlation_id="test-task")
+    adapter = BrokerLogger(logging.getLogger(__name__), {"current_message": lambda: message})
+
+    text, options = adapter.process("private input", {"exc_info": ValueError(), "extra": fields})
+
+    assert text == event
+    assert options["extra"] == {**fields, "task_id": "test-task"}

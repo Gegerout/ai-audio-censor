@@ -12,7 +12,7 @@ from fastapi import FastAPI, Request, Response
 from src.api import healthz, tasks, v1
 from src.broker import declare_topology, make_broker
 from src.config import Settings, get_app_version, get_settings
-from src.logging_config import request_id_var, setup_logging
+from src.logging_config import request_id_var, setup_logging, task_context
 from src.services.tasks import STORAGE_ERRORS
 from src.storage import ensure_schema
 
@@ -47,6 +47,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         log.info("application started", extra={"version": app.version})
         yield
     finally:
+        log.info("application stopping")
         await broker.stop()
         await pool.close()
         log.info("application stopped")
@@ -62,27 +63,33 @@ async def log_requests(
     try:
         response = await call_next(request)
         # Healthcheck Docker дёргает /healthz каждые 10 секунд, на INFO он забил бы полезные логи
-        level = logging.DEBUG if request.url.path == "/healthz" else logging.INFO
-        log.log(
-            level,
-            "request handled",
-            extra={
-                "method": request.method,
-                "path": request.url.path,
-                "status": response.status_code,
-                "duration_ms": round((time.perf_counter() - start) * 1000, 2),
-            },
-        )
+        level = logging.INFO
+        if request.url.path in {"/healthz", "/api/v1/health"} and response.status_code < 400:
+            level = logging.DEBUG
+        elif response.status_code == 503:
+            level = logging.WARNING
+        with task_context(getattr(request.state, "task_id", None)):
+            log.log(
+                level,
+                "request handled",
+                extra={
+                    "method": request.method,
+                    "path": request.url.path,
+                    "status": response.status_code,
+                    "duration_ms": round((time.perf_counter() - start) * 1000, 2),
+                },
+            )
     except Exception:
         # Access лог uvicorn выключен, без этой записи упавший запрос пропадёт из логов
-        log.exception(
-            "request failed",
-            extra={
-                "method": request.method,
-                "path": request.url.path,
-                "duration_ms": round((time.perf_counter() - start) * 1000, 2),
-            },
-        )
+        with task_context(getattr(request.state, "task_id", None)):
+            log.exception(
+                "request failed",
+                extra={
+                    "method": request.method,
+                    "path": request.url.path,
+                    "duration_ms": round((time.perf_counter() - start) * 1000, 2),
+                },
+            )
         raise
     finally:
         request_id_var.reset(token)
@@ -93,7 +100,7 @@ async def log_requests(
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Собрать приложение, подключить логи, роуты и middleware"""
     settings = settings or get_settings()
-    setup_logging(settings.log_level)
+    setup_logging(settings.log_level, "api")
     app = FastAPI(title="AI Audio Censor", version=get_app_version(), lifespan=lifespan)
     app.state.settings = settings
     app.state.broker = make_broker(settings)

@@ -1,6 +1,7 @@
 """Тесты API задач на настоящем Postgres и брокере в памяти"""
 
 import asyncio
+import json
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ from pydantic import SecretStr
 from src.app import create_app
 from src.broker import TASKS_EXCHANGE, TASKS_QUEUE
 from src.config import Settings, get_settings
+from src.logging_config import JsonFormatter
 from src.schemas import TaskMessage
 from src.services import tasks
 from src.services.tasks import estimate_retry_after, retry_after_seconds
@@ -149,8 +151,11 @@ async def test_invalid_text_is_rejected_before_queue(api, task_pool, body) -> No
     assert await stored(task_pool) == 0
 
 
-async def test_full_queue_gives_503_at_once_without_pending(api, task_pool, monkeypatch) -> None:
+async def test_full_queue_gives_503_at_once_without_pending(
+    api, task_pool, monkeypatch, caplog
+) -> None:
     """Заполненная очередь сразу даёт 503 со временем повтора, строка в базе откатывается"""
+    caplog.handler.setFormatter(JsonFormatter())
     reject_with(monkeypatch, api, queue_full())
     monkeypatch.setattr(tasks, "queue_load", AsyncMock(return_value=(100, 1)))
 
@@ -160,6 +165,12 @@ async def test_full_queue_gives_503_at_once_without_pending(api, task_pool, monk
 
     assert response.status_code == 503
     assert response.headers["Retry-After"] == "5"
+    events = [json.loads(line) for line in caplog.text.splitlines()]
+    related = [entry for entry in events if entry["request_id"] == response.headers["X-Request-ID"]]
+    assert [entry["msg"] for entry in related] == ["task rejected", "request handled"]
+    correlation_id = api.app.state.broker.publish.await_args.kwargs["correlation_id"]
+    assert {entry["task_id"] for entry in related} == {correlation_id}
+    assert all(entry["status"] == 503 and entry["level"] == "WARNING" for entry in related)
     assert response.json() == {"detail": "Очередь задач заполнена, повторите позже"}
     assert elapsed < 0.5
     assert await stored(task_pool) == 0

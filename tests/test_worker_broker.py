@@ -1,6 +1,8 @@
 """Воркер на настоящем RabbitMQ в контейнере, брокер в памяти не умеет prefetch и DLQ"""
 
 import asyncio
+import json
+import logging
 import threading
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime
@@ -16,6 +18,7 @@ from faststream.asgi import AsgiFastStream
 
 from src.broker import DEAD_LETTER_QUEUE, TASKS_EXCHANGE, TASKS_QUEUE, TASKS_ROUTING_KEY
 from src.config import Settings, get_settings
+from src.logging_config import JsonFormatter
 from src.schemas import TaskMessage, TaskStatus
 from src.storage import get_task
 from src.worker import create_worker
@@ -129,15 +132,17 @@ async def test_malformed_message_reaches_dead_letter_queue(make_worker, channel)
 
 
 async def test_failing_task_is_redelivered_then_dead_lettered(
-    make_worker, fake_inference, task_pool, channel
+    make_worker, fake_inference, task_pool, channel, caplog
 ) -> None:
     """Брокер повторно доставляет задачу до лимита, затем она уходит в DLQ и не крутится дальше"""
 
     def failing_predict(frame):
-        raise RuntimeError("model crashed")
+        raise RuntimeError(frame.iloc[0]["text"])
 
     fake_inference.model.predict.side_effect = failing_predict
     app = make_worker(task_max_deliveries=3)
+    caplog.handler.setFormatter(JsonFormatter("worker"))
+    logging.getLogger().addHandler(caplog.handler)
     message = task()
 
     async with TestApp(app):
@@ -150,6 +155,12 @@ async def test_failing_task_is_redelivered_then_dead_lettered(
     assert record.status is TaskStatus.FAILED
     assert record.attempts == 3
     assert fake_inference.model.predict.call_count == 3
+    events = [json.loads(line) for line in caplog.text.splitlines()]
+    failures = [e for e in events if e["msg"] == "inference failed"]
+    assert [e["attempts"] for e in failures] == [1, 2, 3]
+    assert all(e.get("task_id") == str(message.task_id) for e in failures)
+    assert all(e["level"] == "ERROR" and "failing_predict" in e["exc_info"] for e in failures)
+    assert message.text not in caplog.text
     assert await ready(channel, TASKS_QUEUE.name) == 0
 
 
@@ -164,3 +175,53 @@ async def _ready_equals(channel, name: str, expected: int) -> bool:
 async def _done_count(pool: asyncpg.Pool, expected: int) -> bool:
     done = await pool.fetchval("SELECT count(*) FROM tasks WHERE status = 'done'")
     return done == expected
+
+
+async def test_worker_correlates_concurrent_model_and_broker_logs(
+    make_worker, fake_inference, task_pool, channel, caplog
+) -> None:
+    """Записи FastStream и потоков модели сохраняют id каждой доставки"""
+    messages = [task(), task()]
+    predict = fake_inference.model.predict.side_effect
+
+    def logged_predict(frame):
+        logging.getLogger("model").info("predict running")
+        return predict(frame)
+
+    fake_inference.model.predict.side_effect = logged_predict
+    caplog.set_level(logging.DEBUG)
+    app = make_worker(log_level="DEBUG")
+    caplog.handler.setFormatter(JsonFormatter("worker"))
+    logging.getLogger().addHandler(caplog.handler)
+    async with TestApp(app):
+        await asyncio.gather(
+            *(
+                app.broker.publish(
+                    message,
+                    exchange=TASKS_EXCHANGE,
+                    routing_key=TASKS_ROUTING_KEY,
+                    correlation_id=str(message.task_id),
+                )
+                for message in messages
+            )
+        )
+        invalid_id = str(uuid4())
+        await app.broker.publish(
+            b"private invalid payload",
+            exchange=TASKS_EXCHANGE,
+            routing_key=TASKS_ROUTING_KEY,
+            correlation_id=invalid_id,
+        )
+
+        await wait_until(lambda: _done_count(task_pool, len(messages)))
+        await wait_until(lambda: _ready_equals(channel, DEAD_LETTER_QUEUE.name, 1))
+
+    output = caplog.text
+    events = [json.loads(line) for line in output.splitlines()]
+    for message in messages:
+        names = [e["msg"] for e in events if e.get("task_id") == str(message.task_id)]
+        assert names == ["Received", "task received", "predict running", "task done", "Processed"]
+        assert message.text not in output
+    assert any(e["level"] == "ERROR" and e.get("task_id") == invalid_id for e in events)
+    assert "private invalid payload" not in output
+    assert all("task_id" not in e for e in events if e["msg"].startswith("worker "))

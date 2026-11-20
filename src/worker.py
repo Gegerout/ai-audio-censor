@@ -9,6 +9,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from dataclasses import dataclass
 from typing import NoReturn, TypeVar
 
@@ -22,7 +23,7 @@ from pydantic import ValidationError
 
 from src.broker import TASKS_EXCHANGE, TASKS_QUEUE, declare_dead_letters, make_broker
 from src.config import Settings, get_settings
-from src.logging_config import setup_logging
+from src.logging_config import setup_logging, task_context
 from src.schemas import ProcessResponse, TaskMessage, TaskStatus
 from src.services.inference import InferenceService, load_inference
 from src.storage import complete_task, ensure_schema, fail_task, start_attempt
@@ -72,31 +73,38 @@ class TaskProcessor:
         try:
             task = TaskMessage.model_validate_json(body)
         except ValidationError as exc:
-            log.warning("malformed task rejected", extra={"error": str(exc.errors()[0]["msg"])})
+            log.error(
+                "malformed task moved to dead letter queue",
+                extra={"error": exc.errors(include_input=False)[0]["msg"], "attempts": 1},
+            )
             # Повтор не исправит некорректное сообщение, поэтому оно сразу уходит в DLQ
-            raise RejectMessage(requeue=False) from exc
-        task_id = str(task.task_id)
+            raise RejectMessage(requeue=False) from None
+        with task_context(task.task_id):
+            await self._process(task)
+
+    async def _process(self, task: TaskMessage) -> None:
+        """Выполнить попытку и сохранить результат"""
         # Попытка учитывается до inference, поэтому считается и падение воркера посреди задачи
         attempt = await self._store(
             start_attempt(self.pool, task.task_id, task.text, task.enqueued_at)
         )
+        log.info("task received", extra={"attempts": attempt.attempts})
         if attempt.status is TaskStatus.DONE:
-            log.info("duplicate task skipped", extra={"task_id": task_id})
+            log.info("duplicate task skipped")
             return
         if attempt.attempts > self.settings.task_max_deliveries:
             await self._give_up(task, attempt.attempts, "превышено число доставок")
         try:
             response = await asyncio.get_running_loop().run_in_executor(
                 self.executor,
+                copy_context().run,
                 run_inference,
                 self.inference,
                 task.text,
                 self.settings.inference_seconds,
             )
         except Exception as exc:
-            log.exception(
-                "inference failed", extra={"task_id": task_id, "attempts": attempt.attempts}
-            )
+            log.exception("inference failed", extra={"attempts": attempt.attempts})
             if attempt.attempts >= self.settings.task_max_deliveries:
                 await self._give_up(task, attempt.attempts, f"ошибка модели {type(exc).__name__}")
             await asyncio.sleep(self.settings.task_retry_delay_seconds)
@@ -109,7 +117,7 @@ class TaskProcessor:
         )
         log.info(
             "task done",
-            extra={"task_id": task_id, "attempts": attempt.attempts, "spans": len(spans)},
+            extra={"attempts": attempt.attempts, "spans": len(spans)},
         )
 
     async def _store(self, operation: Awaitable[T]) -> T:
@@ -117,7 +125,7 @@ class TaskProcessor:
         try:
             return await operation
         except STORAGE_ERRORS as exc:
-            log.warning("storage unavailable, task requeued", extra={"error": repr(exc)})
+            log.warning("storage unavailable, task requeued", extra={"error": type(exc).__name__})
             await asyncio.sleep(self.settings.task_retry_delay_seconds)
             raise RejectMessage(requeue=True) from exc
 
@@ -126,7 +134,7 @@ class TaskProcessor:
         await self._store(fail_task(self.pool, task.task_id, reason))
         log.error(
             "task moved to dead letter queue",
-            extra={"task_id": str(task.task_id), "attempts": attempts, "reason": reason},
+            extra={"attempts": attempts, "reason": reason},
         )
         raise RejectMessage(requeue=False)
 
@@ -144,7 +152,7 @@ def create_worker(
     connect: Callable[[Settings], Awaitable[asyncpg.Pool]] = create_pool,
 ) -> AsgiFastStream:
     """Собрать воркер, загрузку модели и подключение к базе можно подменить в тестах"""
-    setup_logging(settings.log_level)
+    setup_logging(settings.log_level, "worker")
     broker = make_broker(settings, graceful_timeout=settings.worker_graceful_timeout)
     executor = ThreadPoolExecutor(
         max_workers=settings.worker_concurrency, thread_name_prefix="inference"
@@ -162,7 +170,8 @@ def create_worker(
     )
     async def handle_task(message: RabbitMessage) -> None:
         """Передать сообщение обработчику задач"""
-        await state.processor.handle(message.body)
+        with task_context(message.correlation_id):
+            await state.processor.handle(message.body)
 
     async def startup() -> None:
         """Один раз загрузить модель и подключиться к базе до начала приёма задач"""
@@ -187,6 +196,9 @@ def create_worker(
             },
         )
 
+    async def stopping() -> None:
+        log.info("worker stopping")
+
     async def shutdown() -> None:
         """После остановки брокера дождаться потоков пула и закрыть соединения с базой"""
         await asyncio.get_running_loop().run_in_executor(None, executor.shutdown)
@@ -197,6 +209,7 @@ def create_worker(
         broker,
         asgi_routes=[("/healthz", make_ping_asgi(broker, timeout=5.0))],
         on_startup=[startup],
+        on_shutdown=[stopping],
         after_shutdown=[shutdown],
         logger=log,
     )
