@@ -9,6 +9,7 @@ import logging
 import time
 
 import asyncpg
+from faststream.rabbit import RabbitBroker
 
 from src.config import Settings
 from src.schemas import ComponentHealth, HealthResponse, HealthStatus
@@ -39,9 +40,25 @@ async def check_postgres(pool: asyncpg.Pool, settings: Settings) -> ComponentHea
     return ComponentHealth(status=HealthStatus.OK, version=version, latency_ms=_elapsed_ms(start))
 
 
-async def build_report(pool: asyncpg.Pool, settings: Settings) -> HealthResponse:
+async def check_rabbitmq(broker: RabbitBroker, settings: Settings) -> ComponentHealth:
+    """Проверить связь с брокером и замерить время ответа, ждать не дольше таймаута"""
+    start = time.perf_counter()
+    if await broker.ping(settings.health_timeout):
+        return ComponentHealth(status=HealthStatus.OK, latency_ms=_elapsed_ms(start))
+    log.warning("rabbitmq health check failed")
+    return ComponentHealth(
+        status=HealthStatus.FAIL, latency_ms=_elapsed_ms(start), error="ConnectionError"
+    )
+
+
+async def build_report(
+    pool: asyncpg.Pool, broker: RabbitBroker, settings: Settings
+) -> HealthResponse:
     """Собрать отчёт, общий статус ok только если здоровы все зависимости"""
-    components = {"postgres": await check_postgres(pool, settings)}
+    components = {
+        "postgres": await check_postgres(pool, settings),
+        "rabbitmq": await check_rabbitmq(broker, settings),
+    }
     healthy = all(component.status is HealthStatus.OK for component in components.values())
     return HealthResponse(
         status=HealthStatus.OK if healthy else HealthStatus.FAIL, components=components

@@ -1,1 +1,1 @@
-"""Приложение AI Equalizer"""
+"""Приложение AI Audio Censor"""

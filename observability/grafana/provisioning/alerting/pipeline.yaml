@@ -1,0 +1,82 @@
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: pipeline
+    folder: AI Audio Censor
+    interval: 10s
+    rules:
+      - uid: pipeline-queue-pressure
+        title: Очередь задач заполнена более чем на 90%
+        condition: B
+        for: 1m
+        noDataState: NoData
+        execErrState: Error
+        annotations:
+          summary: В очереди tasks осталось меньше 10% свободных мест.
+          __dashboardUid__: pipeline
+          __panelId__: "1"
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: {from: 60, to: 0}
+            model:
+              refId: A
+              expr: >-
+                max(rabbitmq_detailed_queue_messages_ready{job="rabbitmq",queue="tasks"})
+                / (max(pipeline_queue_limit) > 0)
+                or (0 * (max(pipeline_queue_limit) == -1))
+              instant: true
+              range: false
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: {type: gt, params: [0.9]}
+      - uid: pipeline-dlq
+        title: В очереди ошибок появились сообщения
+        condition: B
+        for: 10s
+        noDataState: NoData
+        execErrState: Error
+        annotations:
+          summary: В tasks.dlq есть сообщение, которое требует разбора.
+          __dashboardUid__: pipeline
+          __panelId__: "8"
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: {from: 60, to: 0}
+            model:
+              refId: A
+              expr: max(rabbitmq_detailed_queue_messages_ready{job="rabbitmq",queue="tasks.dlq"})
+              instant: true
+              range: false
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: {type: gt, params: [0]}
+
+muteTimes:
+  - orgId: 1
+    name: pipeline-ui-only
+    time_intervals:
+      - times:
+          - start_time: "00:00"
+            end_time: "24:00"
+
+policies:
+  - orgId: 1
+    receiver: grafana-default-email
+    group_by: [grafana_folder, alertname]
+    routes:
+      - receiver: grafana-default-email
+        object_matchers:
+          - [grafana_folder, "=", AI Audio Censor]
+        mute_time_intervals: [pipeline-ui-only]

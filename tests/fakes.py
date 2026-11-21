@@ -19,3 +19,14 @@ class FakePool:
         if self.error is not None:
             raise self.error
         return self.version
+
+
+class FakeBroker:
+    """Брокер вместо RabbitMQ для проверки живости, отвечает или не отвечает на ping"""
+
+    def __init__(self, alive: bool = True) -> None:
+        self.alive = alive
+
+    async def ping(self, _timeout: float | None) -> bool:
+        """Ответить, есть ли связь с брокером"""
+        return self.alive

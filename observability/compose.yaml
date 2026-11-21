@@ -1,0 +1,179 @@
+x-observer: &observer
+  pull_policy: build
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: 5m
+      max-file: "2"
+
+x-collector: &collector
+  <<: *observer
+  build:
+    context: .
+    args:
+      BASE_IMAGE: otel/opentelemetry-collector:${OTEL_COLLECTOR_VERSION:-0.140.0}
+  command: [--config=/etc/otelcol/common.yaml, --config=/etc/otelcol/pipeline.yaml]
+  mem_limit: 96m
+  environment:
+    GOMEMLIMIT: 68MiB
+  networks: [backend, default]
+  healthcheck:
+    test: [CMD, /bin/busybox, wget, -qO, /dev/null, 'http://127.0.0.1:13133/']
+    interval: 5s
+    timeout: 3s
+    retries: 12
+
+services:
+  loki:
+    <<: *observer
+    profiles: [logs, observability]
+    image: ${COMPOSE_PROJECT_NAME}-loki:${LOKI_VERSION:-3.6.3}
+    build:
+      context: .
+      args:
+        BASE_IMAGE: grafana/loki:${LOKI_VERSION:-3.6.3}
+    command: [-config.file=/etc/loki/config.yaml]
+    mem_limit: 256m
+    environment:
+      GOMEMLIMIT: 192MiB
+    ports:
+      - "127.0.0.1:${LOKI_PORT:-3100}:3100"
+    volumes:
+      - ./loki.yaml:/etc/loki/config.yaml:ro
+      - loki-data:/loki
+    healthcheck:
+      test: [CMD, /bin/busybox, wget, -qO, /dev/null, 'http://127.0.0.1:3100/ready']
+      interval: 5s
+      timeout: 3s
+      retries: 18
+
+  alloy:
+    <<: *observer
+    profiles: [logs, observability]
+    image: ${COMPOSE_PROJECT_NAME}-alloy:${ALLOY_VERSION:-v1.11.2}
+    build:
+      context: .
+      args:
+        BASE_IMAGE: grafana/alloy:${ALLOY_VERSION:-v1.11.2}
+    command: [run, --disable-reporting, --storage.path=/var/lib/alloy, /etc/alloy/config.alloy]
+    mem_limit: 144m
+    environment:
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME}
+      GOMEMLIMIT: 96MiB
+    ports:
+      - "127.0.0.1:${SOURCE_SYSLOG_PORT:-15140}:15140/udp"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./log-agent/config.alloy:/etc/alloy/config.alloy:ro
+      - alloy-data:/var/lib/alloy
+    healthcheck:
+      test: [CMD, /bin/busybox, wget, -qO, /dev/null, 'http://127.0.0.1:12345/-/ready']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  otel-collector:
+    <<: *collector
+    image: ${COMPOSE_PROJECT_NAME}-otel-collector:${OTEL_COLLECTOR_VERSION:-0.140.0}
+    profiles: [traces, observability]
+    volumes:
+      - ./otel-collector.yaml:/etc/otelcol/common.yaml:ro
+      - ./collector-traces.yaml:/etc/otelcol/pipeline.yaml:ro
+
+  metrics-collector:
+    <<: *collector
+    image: ${COMPOSE_PROJECT_NAME}-metrics-collector:${OTEL_COLLECTOR_VERSION:-0.140.0}
+    profiles: [metrics, observability]
+    volumes:
+      - ./otel-collector.yaml:/etc/otelcol/common.yaml:ro
+      - ./collector-metrics.yaml:/etc/otelcol/pipeline.yaml:ro
+
+  tempo:
+    <<: *observer
+    profiles: [traces, observability]
+    image: ${COMPOSE_PROJECT_NAME}-tempo:${TEMPO_VERSION:-2.9.0}
+    build:
+      context: .
+      args:
+        BASE_IMAGE: grafana/tempo:${TEMPO_VERSION:-2.9.0}
+    command: [-config.file=/etc/tempo.yaml]
+    mem_limit: 240m
+    environment:
+      GOMEMLIMIT: 180MiB
+    ports:
+      - "127.0.0.1:${TEMPO_PORT:-3200}:3200"
+    volumes:
+      - ./tempo.yaml:/etc/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    healthcheck:
+      test: [CMD, /bin/busybox, wget, -qO, /dev/null, 'http://127.0.0.1:3200/ready']
+      interval: 5s
+      timeout: 3s
+      retries: 18
+
+  prometheus:
+    <<: *observer
+    profiles: [metrics, observability]
+    image: prom/prometheus:${PROMETHEUS_VERSION:-v3.8.0}
+    pull_policy: missing
+    mem_limit: 240m
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-otlp-receiver
+      - --enable-feature=exemplar-storage
+    networks: [backend, default]
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./prometheus.yaml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    healthcheck:
+      test: [CMD, wget, -qO, /dev/null, 'http://127.0.0.1:9090/-/ready']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  grafana:
+    <<: *observer
+    profiles: [observability]
+    image: grafana/grafana:${GRAFANA_VERSION:-12.3.1}
+    pull_policy: missing
+    mem_limit: 384m
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-}
+      GF_UNIFIED_ALERTING_STATE_HISTORY_ANNOTATIONS_MAX_AGE: 2d
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+    entrypoint:
+      - sh
+      - -ec
+      - |
+        : "$${GF_SECURITY_ADMIN_PASSWORD:?задайте GRAFANA_PASSWORD в .env}"
+        exec /run.sh "$$@"
+      - --
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/provisioning/alerting:/etc/grafana/provisioning/alerting:ro
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro
+    healthcheck:
+      test: [CMD, wget, -qO, /dev/null, 'http://127.0.0.1:3000/api/health']
+      interval: 5s
+      timeout: 3s
+      retries: 18
+
+networks:
+  backend:
+
+volumes:
+  grafana-data:
+  prometheus-data:
+  tempo-data:
+  loki-data:
+  alloy-data:

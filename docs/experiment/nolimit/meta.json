@@ -1,0 +1,8 @@
+{
+  "mode": "nolimit",
+  "count": 4000,
+  "second_worker_at": 60,
+  "limit": null,
+  "run": "experiment-nolimit-1792696636",
+  "second_worker_requested_at": 60.0
+}

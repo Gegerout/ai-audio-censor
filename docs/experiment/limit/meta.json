@@ -1,0 +1,8 @@
+{
+  "mode": "limit",
+  "count": 4000,
+  "second_worker_at": 60,
+  "limit": 100,
+  "run": "experiment-limit-1792683465",
+  "second_worker_requested_at": 60.0
+}

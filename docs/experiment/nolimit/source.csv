@@ -1,0 +1,4 @@
+t,msg,published,rate,rejected_recently,rejected,delay_ms
+2.1,source started,,,,,
+3.1,source progress,3078,3077.7,0,0,0
+3.5,source finished,4000,2861.6,,0,0

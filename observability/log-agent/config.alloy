@@ -1,0 +1,79 @@
+logging {
+	level = "warn"
+}
+
+discovery.docker "pipeline" {
+	host             = "unix:///var/run/docker.sock"
+	refresh_interval = "5s"
+
+	filter {
+		name   = "label"
+		values = ["com.docker.compose.project=" + sys.env("COMPOSE_PROJECT_NAME")]
+	}
+}
+
+discovery.relabel "services" {
+	targets = discovery.docker.pipeline.targets
+
+	rule {
+		source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+		regex         = "app|worker"
+		action        = "keep"
+	}
+}
+
+loki.source.docker "pipeline" {
+	host       = "unix:///var/run/docker.sock"
+	targets    = discovery.relabel.services.output
+	forward_to = [loki.process.pipeline.receiver]
+}
+
+discovery.relabel "syslog_tag" {
+	targets = []
+
+	rule {
+		source_labels = ["__syslog_message_app_name"]
+		target_label  = "compose_origin"
+	}
+}
+
+loki.source.syslog "source" {
+	listener {
+		address                = "0.0.0.0:15140"
+		protocol               = "udp"
+		use_incoming_timestamp = true
+	}
+	relabel_rules = discovery.relabel.syslog_tag.rules
+	forward_to    = [loki.relabel.source.receiver]
+}
+
+loki.relabel "source" {
+	rule {
+		source_labels = ["compose_origin"]
+		regex         = sys.env("COMPOSE_PROJECT_NAME") + "/source"
+		action        = "keep"
+	}
+	forward_to = [loki.process.pipeline.receiver]
+}
+
+loki.process "pipeline" {
+	stage.json {
+		expressions    = {level = "level", service = "service", env = "env"}
+		drop_malformed = true
+	}
+
+	stage.labels {
+		values = {level = "", service = "", env = ""}
+	}
+
+	stage.label_keep {
+		values = ["service", "level", "env"]
+	}
+	forward_to = [loki.write.local.receiver]
+}
+
+loki.write "local" {
+	endpoint {
+		url = "http://loki:3100/loki/api/v1/push"
+	}
+}

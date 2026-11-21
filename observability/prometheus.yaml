@@ -1,0 +1,34 @@
+global:
+  scrape_interval: 5s
+  scrape_timeout: 4s
+
+storage:
+  tsdb:
+    retention:
+      time: 2d
+  exemplars:
+    max_exemplars: 10000
+
+scrape_configs:
+  - job_name: rabbitmq
+    metrics_path: /metrics/detailed
+    params:
+      family: [queue_coarse_metrics, queue_metrics]
+      vhost: ["/"]
+    static_configs:
+      - targets: [rabbitmq:15692]
+    metric_relabel_configs:
+      - source_labels: [queue]
+        regex: 'tasks|tasks\.dlq'
+        action: keep
+      - source_labels: [__name__]
+        regex: rabbitmq_detailed_queue_(messages|messages_ready|messages_unacked|consumers|process_memory_bytes|messages_bytes)
+        action: keep
+
+  - job_name: rabbitmq-runtime
+    static_configs:
+      - targets: [rabbitmq:15692]
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: rabbitmq_process_resident_memory_bytes
+        action: keep

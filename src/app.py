@@ -5,24 +5,37 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from functools import partial
 
 import asyncpg
 from fastapi import FastAPI, Request, Response
+from opentelemetry import trace
 
-from src.api import healthz, v1
-from src.config import get_app_version, get_settings
-from src.logging_config import request_id_var, setup_logging
+from src import metrics, tracing
+from src.api import healthz, tasks, v1
+from src.broker import declare_topology, make_broker, observe_queue_limit
+from src.config import Settings, get_app_version, get_settings
+from src.logging_config import request_id_var, setup_logging, task_context
+from src.services.tasks import STORAGE_ERRORS
+from src.storage import ensure_schema
 
 log = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Создать пул соединений с Postgres при старте и закрыть при остановке"""
-    settings = get_settings()
+    """Создать пул БД и подключиться к брокеру до начала обработки запросов"""
+    tracing.configure("api")
+    settings: Settings = app.state.settings
+    if meter := metrics.configure("api", settings.inference_seconds):
+        meter.create_observable_gauge(
+            "pipeline_queue_limit", callbacks=[partial(observe_queue_limit, settings)]
+        )
+        for status in (202, 503):
+            metrics.requests.add(0, {"route": "/api/v1/tasks", "status": status})
     # Пул с min_size 0 не подключается при старте, поэтому приложение поднимется и без БД,
     # а /api/v1/health покажет, что она недоступна
-    app.state.db_pool = await asyncpg.create_pool(
+    pool = await asyncpg.create_pool(
         host=settings.postgres_host,
         port=settings.postgres_port,
         user=settings.postgres_user,
@@ -30,43 +43,88 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         database=settings.postgres_db,
         min_size=0,
     )
-    log.info("application started", extra={"version": app.version})
-    yield
-    await app.state.db_pool.close()
-    log.info("application stopped")
+    app.state.db_pool = pool
+    broker = app.state.broker
+    try:
+        # Без брокера задачи принимать некуда, поэтому приложение не стартует
+        await broker.connect()
+        await declare_topology(broker)
+        try:
+            await ensure_schema(pool)
+        except STORAGE_ERRORS as exc:
+            # Таблицу создаст воркер или следующий старт, пока база недоступна, API отвечает 503
+            log.warning("task table not ensured", extra={"error": repr(exc)})
+        log.info("application started", extra={"version": app.version})
+        yield
+    finally:
+        log.info("application stopping")
+        await broker.stop()
+        await pool.close()
+        log.info("application stopped")
 
 
 async def log_requests(
     request: Request, call_next: Callable[[Request], Awaitable[Response]]
 ) -> Response:
     """Выдать запросу request_id и залогировать метод, путь, статус и длительность"""
+    start = time.perf_counter()
+    with tracing.span(
+        request.method,
+        kind=trace.SpanKind.SERVER,
+        context=tracing.extract_context(request.headers),
+        attributes={"http.request.method": request.method},
+    ) as span:
+        status = 500
+        try:
+            response = await _log_request(request, call_next, start)
+            status = response.status_code
+            return response
+        finally:
+            span.set_attribute("http.response.status_code", status)
+            if status >= 500:
+                span.set_status(trace.StatusCode.ERROR)
+            route = getattr(request.scope.get("route"), "path", "unmatched")
+            metrics.requests.add(1, {"route": route, "status": status})
+            metrics.api_duration.record(time.perf_counter() - start, {"route": route})
+            span.set_attribute("http.route", route)
+            span.update_name(f"{request.method} {route}")
+
+
+async def _log_request(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]], start: float
+) -> Response:
     request_id = uuid.uuid4().hex
     token = request_id_var.set(request_id)
-    start = time.perf_counter()
     try:
         response = await call_next(request)
         # Healthcheck Docker дёргает /healthz каждые 10 секунд, на INFO он забил бы полезные логи
-        level = logging.DEBUG if request.url.path == "/healthz" else logging.INFO
-        log.log(
-            level,
-            "request handled",
-            extra={
-                "method": request.method,
-                "path": request.url.path,
-                "status": response.status_code,
-                "duration_ms": round((time.perf_counter() - start) * 1000, 2),
-            },
-        )
+        level = logging.INFO
+        if request.url.path in {"/healthz", "/api/v1/health"} and response.status_code < 400:
+            level = logging.DEBUG
+        elif response.status_code == 503:
+            level = logging.WARNING
+        with task_context(getattr(request.state, "task_id", None)):
+            log.log(
+                level,
+                "request handled",
+                extra={
+                    "method": request.method,
+                    "path": request.url.path,
+                    "status": response.status_code,
+                    "duration_ms": round((time.perf_counter() - start) * 1000, 2),
+                },
+            )
     except Exception:
         # Access лог uvicorn выключен, без этой записи упавший запрос пропадёт из логов
-        log.exception(
-            "request failed",
-            extra={
-                "method": request.method,
-                "path": request.url.path,
-                "duration_ms": round((time.perf_counter() - start) * 1000, 2),
-            },
-        )
+        with task_context(getattr(request.state, "task_id", None)):
+            log.exception(
+                "request failed",
+                extra={
+                    "method": request.method,
+                    "path": request.url.path,
+                    "duration_ms": round((time.perf_counter() - start) * 1000, 2),
+                },
+            )
         raise
     finally:
         request_id_var.reset(token)
@@ -74,13 +132,17 @@ async def log_requests(
     return response
 
 
-def create_app() -> FastAPI:
+def create_app(settings: Settings | None = None) -> FastAPI:
     """Собрать приложение, подключить логи, роуты и middleware"""
-    setup_logging(get_settings().log_level)
-    app = FastAPI(title="ai-equalizer", version=get_app_version(), lifespan=lifespan)
+    settings = settings or get_settings()
+    setup_logging(settings.log_level, "api")
+    app = FastAPI(title="AI Audio Censor", version=get_app_version(), lifespan=lifespan)
+    app.state.settings = settings
+    app.state.broker = make_broker(settings)
     app.middleware("http")(log_requests)
     app.include_router(healthz.router)
     app.include_router(v1.router)
+    app.include_router(tasks.router)
     return app
 
 

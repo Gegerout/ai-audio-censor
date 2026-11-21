@@ -1,0 +1,9 @@
+exporters:
+  otlphttp:
+    endpoint: http://prometheus:9090/api/v1/otlp
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp]
